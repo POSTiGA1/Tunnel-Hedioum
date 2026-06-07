@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	banDuration   = 2 * time.Hour
-	decoySSHPrt   = "127.0.0.1:2022"
-	dialTimeout   = 10 * time.Second
+	banDuration = 2 * time.Hour
+	decoySSHPrt = "127.0.0.1:2022"
+	dialTimeout = 10 * time.Second
 )
 
 var (
