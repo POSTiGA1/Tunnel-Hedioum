@@ -61,6 +61,14 @@ EOF
 systemctl daemon-reload
 systemctl enable hedioum.service > /dev/null 2>&1
 
+# Anti-Socket Activation Patch for Ubuntu 22.04+ / 24.04+
+# This ensures Port 22 is completely released from systemd-allocated sockets
+if systemctl is-active --quiet ssh.socket; then
+    echo "[*] Modern Ubuntu socket activation detected. Disabling ssh.socket to free Port 22..."
+    systemctl disable --now ssh.socket > /dev/null 2>&1
+    systemctl restart ssh > /dev/null 2>&1
+fi
+
 # 5. Bootstrapping & Wizard Handling
 echo "=================================================="
 if [ ! -f "/etc/hedioum/hedioum.json" ]; then
