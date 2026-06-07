@@ -24,18 +24,26 @@ fi
 rm -f /usr/local/bin/hedioum-tunnel
 # -----------------------------------------------------------------------------
 
-# --- FIX: Anti-Censorship Download mechanism (Direct + Proxy Fallback) ---
-echo "[*] Fetching the latest optimized binary..."
+# --- FIX: Dynamic Release Downloader (GitHub API) ---
+echo "[*] Fetching the latest release from GitHub..."
 
-URL_DIRECT="https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/bin/hedioum-tunnel"
-URL_PROXY="https://ghp.ci/https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/bin/hedioum-tunnel"
+# Use GitHub API to find the download URL of the latest release asset
+LATEST_URL=$(curl -s https://api.github.com/repos/hedioum/Hedioum-Pool-Tunnel/releases/latest | grep "browser_download_url" | grep "hedioum-tunnel" | cut -d '"' -f 4)
 
-if curl -f -L -s -o /usr/local/bin/hedioum-tunnel "$URL_DIRECT"; then
-    echo "[✓] Binary downloaded successfully (Direct)."
+# Fallback URLs in case GitHub API is rate-limited or blocked
+if [ -z "$LATEST_URL" ]; then
+    echo "[-] GitHub API rate-limited or blocked. Falling back to direct raw link..."
+    LATEST_URL="https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/bin/hedioum-tunnel"
+fi
+
+URL_PROXY="https://ghp.ci/$LATEST_URL"
+
+if curl -f -L -s -o /usr/local/bin/hedioum-tunnel "$LATEST_URL"; then
+    echo "[✓] Binary downloaded successfully (Direct Release)."
 elif curl -f -L -s -o /usr/local/bin/hedioum-tunnel "$URL_PROXY"; then
     echo "[✓] Binary downloaded successfully (Proxy Fallback for Iran Hub)."
 else
-    echo "[x] ERROR: Failed to download the binary from all sources. Network is severely restricted."
+    echo "[x] ERROR: Failed to download the binary. Network is severely restricted."
     exit 1
 fi
 
