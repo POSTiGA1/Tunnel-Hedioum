@@ -25,14 +25,14 @@ Installation Order: You MUST install the Foreign Node first to generate the Auth
 ### Step 1: Deploy Foreign Node (Egress)
 Run the following command on your foreign VPS:
 
-    bash <(curl -s [https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/install.sh](https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/install.sh))
+    bash <(curl -s https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/install.sh)
 
 Follow the interactive wizard. Copy the generated Auth Token.
 
 ### Step 2: Deploy Iran Node (Hub)
 Run the same command on your Iran VPS:
 
-    bash <(curl -s [https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/install.sh](https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/install.sh))
+    bash <(curl -s https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/install.sh)
 
 Select "Iran Node" and add your Foreign Node using the IP and Auth Token from Step 1.
 
