@@ -6,6 +6,7 @@ require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/fatih/color v1.19.0
 	github.com/hashicorp/yamux v0.1.2
+	golang.org/x/time v0.15.0
 )
 
 require (

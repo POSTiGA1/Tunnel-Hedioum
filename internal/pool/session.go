@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"math/rand"
 	"net"
 	"sync"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -28,6 +30,9 @@ type YamuxSession struct {
 	jitterMbps     int
 	currentCapMbps int
 
+	// Token Bucket Rate Limiter (Hard Limit)
+	limiter *rate.Limiter
+
 	lastActivity time.Time
 	mu           sync.RWMutex
 }
@@ -41,11 +46,11 @@ func NewYamuxSession(ys *yamux.Session, baseLimit, jitter int) *YamuxSession {
 		jitterMbps:    jitter,
 		lastActivity:  time.Now(),
 	}
-	s.UpdateChaosLimit() // Initialize the first fluctuating cap
+	s.UpdateChaosLimit() // Initialize the first fluctuating cap and token bucket
 	return s
 }
 
-// monitoredStream is a Decorator for net.Conn that intercepts IO operations to count bytes atomically.
+// monitoredStream is a Decorator for net.Conn that intercepts IO operations to count bytes and shape traffic.
 type monitoredStream struct {
 	net.Conn
 	parent *YamuxSession
@@ -55,11 +60,32 @@ func (m *monitoredStream) Read(b []byte) (int, error) {
 	n, err := m.Conn.Read(b)
 	if n > 0 {
 		atomic.AddUint64(&m.parent.bytesTransferred, uint64(n))
+
+		// Enforce Hard Rate Limit (Token Bucket) AFTER reading.
+		// This forces the app to consume data slowly, filling up the OS socket buffer.
+		// The OS will then naturally reduce the TCP Window Size (Backpressure), slowing down the sender.
+		toWait := n
+		burst := m.parent.limiter.Burst()
+		if toWait > burst {
+			toWait = burst // Clamp to burst size to prevent WaitN from returning an error
+		}
+		m.parent.limiter.WaitN(context.Background(), toWait)
 	}
 	return n, err
 }
 
 func (m *monitoredStream) Write(b []byte) (int, error) {
+	// Enforce Hard Rate Limit BEFORE writing.
+	// This prevents dumping huge payloads into the OS buffer instantly, smoothing out outbound traffic.
+	if len(b) > 0 {
+		toWait := len(b)
+		burst := m.parent.limiter.Burst()
+		if toWait > burst {
+			toWait = burst
+		}
+		m.parent.limiter.WaitN(context.Background(), toWait)
+	}
+
 	n, err := m.Conn.Write(b)
 	if n > 0 {
 		atomic.AddUint64(&m.parent.bytesTransferred, uint64(n))
@@ -67,42 +93,51 @@ func (m *monitoredStream) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// OpenStream opens a new logical stream, wrapping it in our bandwidth monitor.
+// OpenStream opens a new logical stream, wrapping it in our bandwidth monitor & shaper.
 func (ys *YamuxSession) OpenStream() (net.Conn, error) {
 	stream, err := ys.session.OpenStream()
 	if err == nil {
 		ys.mu.Lock()
 		ys.lastActivity = time.Now()
 		ys.mu.Unlock()
-		// Wrap the native stream to intercept and count traffic
+		// Wrap the native stream to intercept, count, and throttle traffic
 		return &monitoredStream{Conn: stream, parent: ys}, nil
 	}
 	return nil, err
 }
 
 // GetAndResetBytes atomically fetches the total transferred bytes since the last check, and resets the counter to 0.
-// This is ultra-efficient for the background watchdog to calculate real-time Mbps.
 func (ys *YamuxSession) GetAndResetBytes() uint64 {
 	return atomic.SwapUint64(&ys.bytesTransferred, 0)
 }
 
-// UpdateChaosLimit shifts the bandwidth cap randomly to evade DPI pattern matching.
+// UpdateChaosLimit shifts the bandwidth cap randomly and updates the Hard Rate Limiter.
 func (ys *YamuxSession) UpdateChaosLimit() {
 	ys.mu.Lock()
 	defer ys.mu.Unlock()
 
 	if ys.jitterMbps == 0 {
 		ys.currentCapMbps = ys.baseLimitMbps
-		return
+	} else {
+		// Calculate a random variance between -jitter and +jitter
+		variance := rand.Intn((ys.jitterMbps*2)+1) - ys.jitterMbps
+		ys.currentCapMbps = ys.baseLimitMbps + variance
 	}
-
-	// Calculate a random variance between -jitter and +jitter
-	variance := rand.Intn((ys.jitterMbps*2)+1) - ys.jitterMbps
-	ys.currentCapMbps = ys.baseLimitMbps + variance
 
 	// Ensure the cap never drops to zero or below
 	if ys.currentCapMbps < 1 {
 		ys.currentCapMbps = 1
+	}
+
+	// Convert Mbps to Bytes per Second (Bps)
+	bytesPerSec := float64(ys.currentCapMbps) * 1024 * 1024 / 8
+
+	// Update or Initialize the Token Bucket Limiter
+	// Burst size is set to 2MB to allow normal TCP window scaling, while strictly enforcing the sustained Bps rate.
+	if ys.limiter == nil {
+		ys.limiter = rate.NewLimiter(rate.Limit(bytesPerSec), 2*1024*1024)
+	} else {
+		ys.limiter.SetLimit(rate.Limit(bytesPerSec))
 	}
 }
 
@@ -119,7 +154,6 @@ func (ys *YamuxSession) SetDraining() {
 	atomic.StoreInt32(&ys.state, StateDraining)
 }
 
-// Revive rescues a draining connection back to active duty, saving the overhead of a new TCP handshake.
 func (ys *YamuxSession) Revive() {
 	atomic.StoreInt32(&ys.state, StateActive)
 }

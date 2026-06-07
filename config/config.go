@@ -25,6 +25,7 @@ type ForeignNode struct {
 	TargetIP            string `json:"target_ip"`
 	TargetPort          int    `json:"target_port"`
 	LocalSocksPort      int    `json:"local_socks_port"`
+	MinConnections      int    `json:"min_connections"`       // Establishes the baseline warm-up pool size
 	MaxConnections      int    `json:"max_connections"`       // Dynamically customizes pool sizing per server
 	BandwidthLimitMbps  int    `json:"bandwidth_limit_mbps"`  // Target speed (Mbps) per physical connection before scale-up
 	BandwidthJitterMbps int    `json:"bandwidth_jitter_mbps"` // Variance to evade DPI patterns (Chaos Mesh)
@@ -62,8 +63,11 @@ func LoadConfig() (*AppConfig, error) {
 	}
 
 	// --- Backward Compatibility & Fallback Logic ---
-	// Ensures existing deployments won't crash due to missing bandwidth fields in old JSON configs.
+	// Ensures existing deployments won't crash due to missing fields in old JSON configs.
 	for i := range cfg.ForeignNodes {
+		if cfg.ForeignNodes[i].MinConnections == 0 {
+			cfg.ForeignNodes[i].MinConnections = 10 // Default baseline: 10 connections
+		}
 		if cfg.ForeignNodes[i].BandwidthLimitMbps == 0 {
 			cfg.ForeignNodes[i].BandwidthLimitMbps = 8 // Default target: 8 Mbps per connection
 		}

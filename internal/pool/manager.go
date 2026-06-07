@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	minConnections  = 5
 	defaultMaxConns = 15
+	defaultMinConns = 10
 	staggerDelay    = 500 * time.Millisecond
 	healthCheckFreq = 10 * time.Second
 )
@@ -34,6 +34,7 @@ type PoolStats struct {
 type NodePool struct {
 	Alias          string
 	TargetIP       string
+	minConnections int
 	maxConnections int
 	baseLimitMbps  int
 	jitterMbps     int
@@ -62,14 +63,20 @@ func (hm *HubManager) RegisterNode(cfg config.ForeignNode, dialer DialFunc) {
 	hm.mu.Lock()
 	defer hm.mu.Unlock()
 
+	minConns := cfg.MinConnections
+	if minConns < 1 {
+		minConns = defaultMinConns
+	}
+
 	maxConns := cfg.MaxConnections
-	if maxConns < minConnections {
-		maxConns = defaultMaxConns
+	if maxConns < minConns {
+		maxConns = minConns + 5 // Ensure max is always reasonably higher than min
 	}
 
 	pool := &NodePool{
 		Alias:          cfg.Alias,
 		TargetIP:       cfg.TargetIP,
+		minConnections: minConns,
 		maxConnections: maxConns,
 		baseLimitMbps:  cfg.BandwidthLimitMbps,
 		jitterMbps:     cfg.BandwidthJitterMbps,
@@ -128,8 +135,8 @@ func (np *NodePool) monitorAndScale() {
 	ticker := time.NewTicker(healthCheckFreq)
 	defer ticker.Stop()
 
-	// Initial warmup
-	np.replenishPool(minConnections)
+	// Initial warmup based on dynamic MinConnections
+	np.replenishPool(np.minConnections)
 
 	for {
 		select {
@@ -165,7 +172,7 @@ func (np *NodePool) evaluateHealthAndScale() {
 		mbps := int((bytesLastInterval * 8) / (1024 * 1024 * intervalSeconds))
 		totalPoolMbps += mbps
 
-		// Randomize speed limits to evade pattern matching
+		// Randomize speed limits to evade pattern matching (and update Token Bucket)
 		s.UpdateChaosLimit()
 		cap := s.CurrentCap()
 
@@ -178,7 +185,7 @@ func (np *NodePool) evaluateHealthAndScale() {
 			}
 
 			// Scale-Down logic: Drop excess connections that are barely moving traffic
-			if activeCount > minConnections && mbps < 1 && s.IdleTime() > dynamicIdleLimit {
+			if activeCount > np.minConnections && mbps < 1 && s.IdleTime() > dynamicIdleLimit {
 				s.SetDraining() // Shift to Draining (Wait for logical streams to drop to zero)
 				activeCount--
 				log.Printf("[Pool-%s] Scaled DOWN: Connection moved to Draining state (Idle/Low load).\n", np.Alias)
@@ -204,7 +211,7 @@ func (np *NodePool) evaluateHealthAndScale() {
 		np.executeScaleUp()
 	}
 
-	// 3. Guarantee baseline availability safely
+	// 3. Guarantee baseline availability safely based on MinConnections
 	np.mu.RLock()
 	currentActive := 0
 	for _, s := range np.sessions {
@@ -214,8 +221,8 @@ func (np *NodePool) evaluateHealthAndScale() {
 	}
 	np.mu.RUnlock()
 
-	if currentActive < minConnections {
-		np.replenishPool(minConnections - currentActive)
+	if currentActive < np.minConnections {
+		np.replenishPool(np.minConnections - currentActive)
 	}
 }
 
@@ -251,7 +258,7 @@ func (np *NodePool) replenishPool(needed int) {
 		rawYamuxSession, err := np.dialer()
 		if err == nil && rawYamuxSession != nil {
 
-			// Initialize with our customized Chaos Wrapper
+			// Initialize with our customized Chaos Wrapper (Token Bucket is initialized inside)
 			wrappedSession := NewYamuxSession(rawYamuxSession, np.baseLimitMbps, np.jitterMbps)
 
 			np.mu.Lock()

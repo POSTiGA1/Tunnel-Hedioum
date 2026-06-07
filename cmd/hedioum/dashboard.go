@@ -4,14 +4,19 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/egress"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/ingress"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/pool"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 )
+
+// Global reference to the active HubManager for fetching live stats (used only on Iran Node)
+var globalHubManager *pool.HubManager
 
 // --- INTERACTIVE OPERATIONS DASHBOARD ---
 
@@ -21,7 +26,7 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 	for {
 		var action string
 		options := []string{
-			"1. Show Live Service Status & Configuration",
+			"1. Show Live Service Status & Monitoring",
 			"2. View Real-time Logs (Journalctl)",
 		}
 
@@ -51,21 +56,34 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 		survey.AskOne(prompt, &action)
 
 		switch action {
-		case "1. Show Live Service Status & Configuration":
-			runSystemCmd("systemctl", "status", "hedioum.service", "--no-pager")
+		case "1. Show Live Service Status & Monitoring":
+			// Print clean systemd status summary
+			color.HiCyan("\n=== [ System Daemon Status ] ===")
+			runSystemCmd("systemctl", "status", "hedioum.service", "--no-pager", "-n", "0")
 
 			if cfg.Role == "iran" && len(cfg.ForeignNodes) > 0 {
-				color.HiCyan("\n--- Active Egress Pools Configuration ---")
+				color.HiCyan("\n=== [ Active Mesh Topologies & Live Stats ] ===")
+
+				// Attempt to connect to the local RPC or read state file in a real app,
+				// but for this CLI, we will display the configuration and guide the user.
+				// Note: Direct live memory access from CLI to Daemon requires an RPC socket.
+				// Since we haven't built the RPC socket yet, we display the structured config.
+
 				for _, n := range cfg.ForeignNodes {
-					fmt.Printf(" Alias: %s | Target: %s:%d | SOCKS: %d\n", color.HiWhiteString(n.Alias), n.TargetIP, n.TargetPort, n.LocalSocksPort)
-					fmt.Printf(" Dynamics: Limit %dMbps (±%dMbps Jitter) | Max Conns: %d\n\n", n.BandwidthLimitMbps, n.BandwidthJitterMbps, n.MaxConnections)
+					fmt.Printf("\n 🟢 Target Alias : %s\n", color.HiWhiteString(n.Alias))
+					fmt.Printf(" ├─ Egress IP    : %s:%d\n", color.HiYellowString(n.TargetIP), n.TargetPort)
+					fmt.Printf(" ├─ Local SOCKS5 : 127.0.0.1:%d\n", n.LocalSocksPort)
+					fmt.Printf(" ├─ Pool Sizing  : %d (Warm-up) to %d (Max Peak) Connections\n", n.MinConnections, n.MaxConnections)
+					fmt.Printf(" └─ DPI Evasion  : Floating Cap %d Mbps (±%d Mbps Jitter)\n", n.BandwidthLimitMbps, n.BandwidthJitterMbps)
 				}
-				color.Yellow("Note: Run 'journalctl -u hedioum.service -f' for live Scale-Up/Down and Mbps monitoring.")
+
+				color.Yellow("\n[*] Note: To view real-time Mbps and connection scale events, use Option 2 (Journalctl).")
+				color.Yellow("    (Live RPC Dashboard memory-link is slated for the next release).")
 			}
 
 		case "2. View Real-time Logs (Journalctl)":
 			color.Cyan("\n[*] Tailing logs. Press Ctrl+C to return to dashboard.\n")
-			runSystemCmd("journalctl", "-u", "hedioum.service", "-f", "-n", "50")
+			runSystemCmd("journalctl", "-u", "hedioum.service", "-f", "-n", "30")
 
 		case "3. Add New Foreign Egress Node":
 			setupIranNode(cfg, false)
@@ -123,7 +141,9 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 			fmt.Println("Exiting dashboard...")
 			os.Exit(0)
 		}
-		fmt.Println("\n---------------------------------------------------------")
+
+		// Print a clean separator before the menu loops again
+		fmt.Println(strings.Repeat("-", 60))
 	}
 }
 

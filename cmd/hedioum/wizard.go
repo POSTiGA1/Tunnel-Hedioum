@@ -100,8 +100,12 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 			Prompt: &survey.Input{Message: "Local SOCKS5 Bind Port (for X-UI Outbound mapping):", Default: "40001"},
 		},
 		{
+			Name:   "minconnections",
+			Prompt: &survey.Input{Message: "Min Physical Connections (Warm-up pool baseline):", Default: "10"},
+		},
+		{
 			Name:   "maxconnections",
-			Prompt: &survey.Input{Message: "Max Physical Connections in Pool (Scale limit):", Default: "20"},
+			Prompt: &survey.Input{Message: "Max Physical Connections (Scale limit):", Default: "20"},
 		},
 		{
 			Name:   "bandwidthlimit",
@@ -122,6 +126,7 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 		Alias           string
 		TargetIP        string
 		LocalSocksPort  string
+		MinConnections  string
 		MaxConnections  string
 		BandwidthLimit  string
 		BandwidthJitter string
@@ -137,6 +142,7 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 	node.AuthToken = answers.AuthToken
 
 	node.LocalSocksPort, _ = strconv.Atoi(answers.LocalSocksPort)
+	node.MinConnections, _ = strconv.Atoi(answers.MinConnections)
 	node.MaxConnections, _ = strconv.Atoi(answers.MaxConnections)
 	node.BandwidthLimitMbps, _ = strconv.Atoi(answers.BandwidthLimit)
 	node.BandwidthJitterMbps, _ = strconv.Atoi(answers.BandwidthJitter)
