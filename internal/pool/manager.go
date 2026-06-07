@@ -20,54 +20,27 @@ const (
 	healthCheckFreq = 10 * time.Second
 )
 
-// YamuxSession wraps the HashiCorp Yamux multiplexer session along with its metadata.
-type YamuxSession struct {
-	session      *yamux.Session
-	lastActivity time.Time
-	mu           sync.RWMutex
-}
-
-// OpenStream opens a new logical stream over the existing multiplexed physical connection.
-func (ys *YamuxSession) OpenStream() (net.Conn, error) {
-	stream, err := ys.session.OpenStream()
-	if err == nil {
-		ys.mu.Lock()
-		ys.lastActivity = time.Now()
-		ys.mu.Unlock()
-	}
-	return stream, err
-}
-
-// IsClosed checks if the underlying Yamux session is dead or terminated.
-func (ys *YamuxSession) IsClosed() bool {
-	return ys.session.IsClosed()
-}
-
-// Close gracefully shuts down the multiplexer session and the underlying TCP connection.
-func (ys *YamuxSession) Close() error {
-	return ys.session.Close()
-}
-
-// IdleTime calculates how long the session has been inactive.
-func (ys *YamuxSession) IdleTime() time.Duration {
-	ys.mu.RLock()
-	defer ys.mu.RUnlock()
-	return time.Since(ys.lastActivity)
-}
-
-// DialFunc is the signature for the function that creates a new authenticated TCP connection,
-// performs the SSH handshake, and returns a fully initialized Yamux Client Session.
+// DialFunc is the signature for the function that creates a new authenticated TCP connection.
 type DialFunc func() (*yamux.Session, error)
+
+// PoolStats holds real-time telemetry data for the interactive dashboard.
+type PoolStats struct {
+	ActiveConns   int
+	DrainingConns int
+	TotalMbps     int
+}
 
 // NodePool manages an auto-scaling pool of Yamux sessions to a single foreign server.
 type NodePool struct {
 	Alias          string
 	TargetIP       string
 	maxConnections int
+	baseLimitMbps  int
+	jitterMbps     int
 	dialer         DialFunc
 	sessions       []*YamuxSession
 	mu             sync.RWMutex
-	roundRobin     uint64
+	currentMbps    int32 // Atomic total bandwidth of this pool for dashboard monitoring
 	shutdown       chan struct{}
 }
 
@@ -89,7 +62,6 @@ func (hm *HubManager) RegisterNode(cfg config.ForeignNode, dialer DialFunc) {
 	hm.mu.Lock()
 	defer hm.mu.Unlock()
 
-	// Handle dynamic max connections (fallback to default if not configured)
 	maxConns := cfg.MaxConnections
 	if maxConns < minConnections {
 		maxConns = defaultMaxConns
@@ -99,6 +71,8 @@ func (hm *HubManager) RegisterNode(cfg config.ForeignNode, dialer DialFunc) {
 		Alias:          cfg.Alias,
 		TargetIP:       cfg.TargetIP,
 		maxConnections: maxConns,
+		baseLimitMbps:  cfg.BandwidthLimitMbps,
+		jitterMbps:     cfg.BandwidthJitterMbps,
 		dialer:         dialer,
 		sessions:       make([]*YamuxSession, 0, maxConns),
 		shutdown:       make(chan struct{}),
@@ -108,7 +82,7 @@ func (hm *HubManager) RegisterNode(cfg config.ForeignNode, dialer DialFunc) {
 	go pool.monitorAndScale() // Start the dedicated watchdog for this node
 }
 
-// GetStream selects a physical connection using Round-Robin and opens a logical stream for the user payload.
+// GetStream selects a physical connection using the "Least Loaded" strategy.
 func (hm *HubManager) GetStream(nodeAlias string) (net.Conn, error) {
 	hm.mu.RLock()
 	pool, exists := hm.pools[nodeAlias]
@@ -118,40 +92,43 @@ func (hm *HubManager) GetStream(nodeAlias string) (net.Conn, error) {
 		return nil, errors.New("foreign node pool not found")
 	}
 
-	return pool.getStreamRoundRobin()
+	return pool.getStreamLeastLoaded()
 }
 
-// getStreamRoundRobin distributes user streams evenly across available active Yamux sessions.
-func (np *NodePool) getStreamRoundRobin() (net.Conn, error) {
+// getStreamLeastLoaded routes the new logical stream to the active physical connection handling the fewest streams.
+func (np *NodePool) getStreamLeastLoaded() (net.Conn, error) {
 	np.mu.RLock()
-	activeCount := len(np.sessions)
-	np.mu.RUnlock()
+	defer np.mu.RUnlock()
 
-	if activeCount == 0 {
+	var bestSession *YamuxSession
+	minStreams := int(^uint(0) >> 1) // Max Int value
+
+	for _, s := range np.sessions {
+		// Do not route new traffic to dead or draining connections
+		if s.IsClosed() || s.IsDraining() {
+			continue
+		}
+
+		activeStreams := s.ActiveStreams()
+		if activeStreams < minStreams {
+			minStreams = activeStreams
+			bestSession = s
+		}
+	}
+
+	if bestSession == nil {
 		return nil, errors.New("no active connections available in the pool")
 	}
 
-	// Atomic increment for lock-free, thread-safe Round-Robin distribution
-	idx := atomic.AddUint64(&np.roundRobin, 1) % uint64(activeCount)
-
-	np.mu.RLock()
-	session := np.sessions[idx]
-	np.mu.RUnlock()
-
-	if session.IsClosed() {
-		return nil, errors.New("selected session is dead, watchdog will clean it up")
-	}
-
-	return session.OpenStream()
+	return bestSession.OpenStream()
 }
 
-// monitorAndScale is the background watchdog responsible for staggered dialing,
-// health checking, and randomized idle teardowns.
+// monitorAndScale is the core watchdog evaluating bandwidth, Chaos evasion, and scale dynamics.
 func (np *NodePool) monitorAndScale() {
 	ticker := time.NewTicker(healthCheckFreq)
 	defer ticker.Stop()
 
-	// Initial warmup: Staggered dial to reach minConnections
+	// Initial warmup
 	np.replenishPool(minConnections)
 
 	for {
@@ -165,60 +142,123 @@ func (np *NodePool) monitorAndScale() {
 	}
 }
 
-// evaluateHealthAndScale performs cleanup of frozen connections and scales down idle ones.
+// evaluateHealthAndScale calculates throughput, shifts DPI evasion caps, and executes Scale-Up/Down logic.
 func (np *NodePool) evaluateHealthAndScale() {
 	np.mu.Lock()
-	var healthySessions []*YamuxSession
+	var retainedSessions []*YamuxSession
 
-	// Random timeout between 60s and 120s to evade DPI predictability
 	dynamicIdleLimit := time.Duration(rand.Intn(61)+60) * time.Second
+	needsScaleUp := false
+	activeCount := 0
+	totalPoolMbps := 0
 
-	for _, session := range np.sessions {
-		if session.IsClosed() {
+	// 1. Analyze all sessions
+	for _, s := range np.sessions {
+		if s.IsClosed() {
 			log.Printf("[Pool-%s] Purged dead/frozen physical connection.\n", np.Alias)
-			continue // Discard dead/frozen sessions
-		}
-
-		// Scale-Down Logic: Drop excess connections that have been idle too long
-		if len(healthySessions) >= minConnections && session.IdleTime() > dynamicIdleLimit {
-			session.Close() // Graceful teardown
-			log.Printf("[Pool-%s] Scaled DOWN: Dropped idle connection. Active: %d\n", np.Alias, len(healthySessions))
 			continue
 		}
 
-		healthySessions = append(healthySessions, session)
+		// Calculate bandwidth (Mbps) over the last check interval
+		bytesLastInterval := s.GetAndResetBytes()
+		intervalSeconds := uint64(healthCheckFreq.Seconds())
+		mbps := int((bytesLastInterval * 8) / (1024 * 1024 * intervalSeconds))
+		totalPoolMbps += mbps
+
+		// Randomize speed limits to evade pattern matching
+		s.UpdateChaosLimit()
+		cap := s.CurrentCap()
+
+		if s.IsActive() {
+			activeCount++
+
+			// Scale-Up trigger: If this connection is pushing beyond 80% of its Chaos Cap
+			if mbps >= int(float64(cap)*0.8) {
+				needsScaleUp = true
+			}
+
+			// Scale-Down logic: Drop excess connections that are barely moving traffic
+			if activeCount > minConnections && mbps < 1 && s.IdleTime() > dynamicIdleLimit {
+				s.SetDraining() // Shift to Draining (Wait for logical streams to drop to zero)
+				activeCount--
+				log.Printf("[Pool-%s] Scaled DOWN: Connection moved to Draining state (Idle/Low load).\n", np.Alias)
+			}
+		} else if s.IsDraining() {
+			// Deep cleanup: Only close a draining session when ALL its streams have naturally finished
+			if s.ActiveStreams() == 0 {
+				s.Close()
+				log.Printf("[Pool-%s] Draining complete. Empty connection closed safely.\n", np.Alias)
+				continue // Remove from memory
+			}
+		}
+
+		retainedSessions = append(retainedSessions, s)
 	}
 
-	np.sessions = healthySessions
-	currentCount := len(np.sessions)
+	np.sessions = retainedSessions
+	atomic.StoreInt32(&np.currentMbps, int32(totalPoolMbps))
 	np.mu.Unlock()
 
-	// Scale-Up / Replenish Logic: Ensure minimum baseline is met safely
-	if currentCount < minConnections {
-		np.replenishPool(minConnections - currentCount)
+	// 2. Execute Scale-Up if triggered by heavy load
+	if needsScaleUp {
+		np.executeScaleUp()
+	}
+
+	// 3. Guarantee baseline availability safely
+	np.mu.RLock()
+	currentActive := 0
+	for _, s := range np.sessions {
+		if s.IsActive() {
+			currentActive++
+		}
+	}
+	np.mu.RUnlock()
+
+	if currentActive < minConnections {
+		np.replenishPool(minConnections - currentActive)
 	}
 }
 
-// replenishPool dials new physical connections one-by-one to prevent TCP SYN flood detection.
+// executeScaleUp prioritizes reviving a draining connection; if none exist, dials a new one.
+func (np *NodePool) executeScaleUp() {
+	np.mu.Lock()
+
+	// Fast Path: Revive a draining connection (Zero Overhead)
+	for _, s := range np.sessions {
+		if s.IsDraining() {
+			s.Revive()
+			log.Printf("[Pool-%s] Scaled UP (Revive): Resurrected a draining connection back to Active.\n", np.Alias)
+			np.mu.Unlock()
+			return
+		}
+	}
+
+	totalConns := len(np.sessions)
+	np.mu.Unlock()
+
+	// Slow Path: Dial a new physical connection
+	if totalConns < np.maxConnections {
+		np.replenishPool(1)
+	} else {
+		log.Printf("[Pool-%s] Warning: Max physical limits reached (%d). Cannot scale further.\n", np.Alias, np.maxConnections)
+	}
+}
+
 func (np *NodePool) replenishPool(needed int) {
 	for i := 0; i < needed; i++ {
-		// Staggered dialing to mimic human/natural network behavior
 		time.Sleep(staggerDelay)
 
 		rawYamuxSession, err := np.dialer()
 		if err == nil && rawYamuxSession != nil {
 
-			wrappedSession := &YamuxSession{
-				session:      rawYamuxSession,
-				lastActivity: time.Now(),
-			}
+			// Initialize with our customized Chaos Wrapper
+			wrappedSession := NewYamuxSession(rawYamuxSession, np.baseLimitMbps, np.jitterMbps)
 
 			np.mu.Lock()
 			if len(np.sessions) < np.maxConnections {
 				np.sessions = append(np.sessions, wrappedSession)
-				log.Printf("[Pool-%s] Scaled UP: +1 connection established. Active: %d/%d\n", np.Alias, len(np.sessions), np.maxConnections)
+				log.Printf("[Pool-%s] Scaled UP (Dial): +1 connection established. Total Pipes: %d/%d\n", np.Alias, len(np.sessions), np.maxConnections)
 			} else {
-				// Pool reached its dynamic maximum limit, discard the newly dialed session
 				wrappedSession.Close()
 			}
 			np.mu.Unlock()
@@ -228,7 +268,35 @@ func (np *NodePool) replenishPool(needed int) {
 	}
 }
 
-// cleanup gracefully terminates all active sessions during node shutdown.
+// GetStats returns aggregated telemetry for the dashboard CLI.
+func (hm *HubManager) GetStats(nodeAlias string) PoolStats {
+	hm.mu.RLock()
+	pool, exists := hm.pools[nodeAlias]
+	hm.mu.RUnlock()
+
+	if !exists {
+		return PoolStats{}
+	}
+
+	pool.mu.RLock()
+	defer pool.mu.RUnlock()
+
+	var active, draining int
+	for _, s := range pool.sessions {
+		if s.IsActive() {
+			active++
+		} else if s.IsDraining() {
+			draining++
+		}
+	}
+
+	return PoolStats{
+		ActiveConns:   active,
+		DrainingConns: draining,
+		TotalMbps:     int(atomic.LoadInt32(&pool.currentMbps)),
+	}
+}
+
 func (np *NodePool) cleanup() {
 	np.mu.Lock()
 	defer np.mu.Unlock()

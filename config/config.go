@@ -21,12 +21,14 @@ type AppConfig struct {
 
 // ForeignNode defines the connection parameters for upstream egress servers
 type ForeignNode struct {
-	Alias          string `json:"alias"`
-	TargetIP       string `json:"target_ip"`
-	TargetPort     int    `json:"target_port"`
-	LocalSocksPort int    `json:"local_socks_port"`
-	MaxConnections int    `json:"max_connections"` // Dynamically customizes pool sizing per server
-	AuthToken      string `json:"auth_token"`
+	Alias               string `json:"alias"`
+	TargetIP            string `json:"target_ip"`
+	TargetPort          int    `json:"target_port"`
+	LocalSocksPort      int    `json:"local_socks_port"`
+	MaxConnections      int    `json:"max_connections"`       // Dynamically customizes pool sizing per server
+	BandwidthLimitMbps  int    `json:"bandwidth_limit_mbps"`  // Target speed (Mbps) per physical connection before scale-up
+	BandwidthJitterMbps int    `json:"bandwidth_jitter_mbps"` // Variance to evade DPI patterns (Chaos Mesh)
+	AuthToken           string `json:"auth_token"`
 }
 
 // getConfigPath determines the absolute storage destination for configuration persistence.
@@ -57,6 +59,17 @@ func LoadConfig() (*AppConfig, error) {
 	var cfg AppConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+
+	// --- Backward Compatibility & Fallback Logic ---
+	// Ensures existing deployments won't crash due to missing bandwidth fields in old JSON configs.
+	for i := range cfg.ForeignNodes {
+		if cfg.ForeignNodes[i].BandwidthLimitMbps == 0 {
+			cfg.ForeignNodes[i].BandwidthLimitMbps = 8 // Default target: 8 Mbps per connection
+		}
+		if cfg.ForeignNodes[i].BandwidthJitterMbps == 0 {
+			cfg.ForeignNodes[i].BandwidthJitterMbps = 2 // Default jitter: +/- 2 Mbps (Chaos variance)
+		}
 	}
 
 	return &cfg, nil

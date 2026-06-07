@@ -128,7 +128,6 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 	color.HiBlue("\n--- Egress Target Registration ---")
 
 	node := config.ForeignNode{}
-	maxConnsStr := "20" // Dynamic scale baseline
 
 	questions := []*survey.Question{
 		{
@@ -147,7 +146,15 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 		},
 		{
 			Name:   "maxconnections",
-			Prompt: &survey.Input{Message: "Max Physical Connections in Pool (Scale limit):", Default: maxConnsStr},
+			Prompt: &survey.Input{Message: "Max Physical Connections in Pool (Scale limit):", Default: "20"},
+		},
+		{
+			Name:   "bandwidthlimit",
+			Prompt: &survey.Input{Message: "Target Bandwidth Limit per Connection (Mbps):", Default: "8"},
+		},
+		{
+			Name:   "bandwidthjitter",
+			Prompt: &survey.Input{Message: "Bandwidth Jitter/Variance for DPI Evasion (Mbps):", Default: "2"},
 		},
 		{
 			Name:     "authtoken",
@@ -158,11 +165,13 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 
 	// Capture responses via intermediate struct to handle integer conversion cleanly
 	answers := struct {
-		Alias          string
-		TargetIP       string
-		LocalSocksPort int
-		MaxConnections string
-		AuthToken      string
+		Alias           string
+		TargetIP        string
+		LocalSocksPort  string
+		MaxConnections  string
+		BandwidthLimit  string
+		BandwidthJitter string
+		AuthToken       string
 	}{}
 
 	if err := survey.Ask(questions, &answers); err != nil {
@@ -171,10 +180,12 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 
 	node.Alias = answers.Alias
 	node.TargetIP = answers.TargetIP
-	node.LocalSocksPort = answers.LocalSocksPort
-	node.TargetPort = 22
 	node.AuthToken = answers.AuthToken
+
+	node.LocalSocksPort, _ = strconv.Atoi(answers.LocalSocksPort)
 	node.MaxConnections, _ = strconv.Atoi(answers.MaxConnections)
+	node.BandwidthLimitMbps, _ = strconv.Atoi(answers.BandwidthLimit)
+	node.BandwidthJitterMbps, _ = strconv.Atoi(answers.BandwidthJitter)
 
 	cfg.UpdateForeignNode(node)
 }
@@ -187,7 +198,7 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 	for {
 		var action string
 		options := []string{
-			"1. Show Live Service Status & Bandwidth",
+			"1. Show Live Service Status & Configuration",
 			"2. View Real-time Logs (Journalctl)",
 		}
 
@@ -209,8 +220,17 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 		survey.AskOne(prompt, &action)
 
 		switch action {
-		case "1. Show Live Service Status & Bandwidth":
+		case "1. Show Live Service Status & Configuration":
 			runSystemCmd("systemctl", "status", "hedioum.service", "--no-pager")
+
+			if cfg.Role == "iran" && len(cfg.ForeignNodes) > 0 {
+				color.HiCyan("\n--- Active Egress Pools Configuration ---")
+				for _, n := range cfg.ForeignNodes {
+					fmt.Printf(" Alias: %s | Target: %s:%d | SOCKS: %d\n", color.HiWhiteString(n.Alias), n.TargetIP, n.TargetPort, n.LocalSocksPort)
+					fmt.Printf(" Dynamics: Limit %dMbps (±%dMbps Jitter) | Max Conns: %d\n\n", n.BandwidthLimitMbps, n.BandwidthJitterMbps, n.MaxConnections)
+				}
+				color.Yellow("Note: Run 'journalctl -u hedioum.service -f' for live Scale-Up/Down and Mbps monitoring.")
+			}
 
 		case "2. View Real-time Logs (Journalctl)":
 			color.Cyan("\n[*] Tailing logs. Press Ctrl+C to return to dashboard.\n")
