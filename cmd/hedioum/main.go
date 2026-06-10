@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"os"
+	"os/exec"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
@@ -22,8 +24,10 @@ func main() {
 		handleReset()
 	}
 
+	isFirstLaunch := false
 	cfg, err := config.LoadConfig()
 	if err != nil {
+		isFirstLaunch = true
 		// No config means first launch. Force terminal wizard regardless of environment.
 		printHeader()
 		color.Yellow("[!] Initializing Setup Wizard for fresh installation...\n")
@@ -35,6 +39,12 @@ func main() {
 	isInteractive := (fileInfo.Mode() & os.ModeCharDevice) != 0
 
 	if isInteractive {
+		if isFirstLaunch {
+			color.HiBlue("\n[*] Bootstrapping background daemon...")
+			_ = exec.Command("systemctl", "start", "hedioum.service").Run()
+			// Give systemd a moment to bind ports before showing the dashboard
+			time.Sleep(1 * time.Second)
+		}
 		runInteractiveDashboard(cfg)
 	} else {
 		// Headless Daemon Execution (Systemd)
