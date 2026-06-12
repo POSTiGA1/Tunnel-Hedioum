@@ -85,6 +85,10 @@ func ChangeSSHPort(newPort string) error {
 	_ = exec.Command("systemctl", "stop", "ssh.socket").Run()
 	_ = exec.Command("systemctl", "disable", "ssh.socket").Run()
 
+	// CRITICAL FIX: Ensure the actual SSH service is enabled for the next system reboot
+	_ = exec.Command("systemctl", "enable", "ssh.service").Run()
+	_ = exec.Command("systemctl", "enable", "sshd.service").Run()
+
 	// 6. Handle Firewall (UFW) dynamically so the user doesn't get locked out
 	if isUFWActive() {
 		color.Yellow("[*] UFW Firewall is active. Opening new SSH port %s/tcp...", newPort)

@@ -44,6 +44,15 @@ func SelfUpdate(currentVersion string) {
 	}
 	defer resp.Body.Close()
 
+	// CRITICAL FIX: Ensure the API returned a 200 OK status before parsing
+	if resp.StatusCode != http.StatusOK {
+		color.Red("[x] GitHub API returned an error: HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+		if resp.StatusCode == http.StatusForbidden {
+			color.Yellow("    [-] You have likely hit the GitHub API rate limit. Please try again later.")
+		}
+		return
+	}
+
 	var release GitHubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
 		color.Red("[x] Failed to parse GitHub API response: %v", err)
@@ -76,6 +85,9 @@ func SelfUpdate(currentVersion string) {
 
 	color.Yellow("[*] New version found: %s. Starting safe update...", release.TagName)
 
+	// CRITICAL FIX: Ensure the temporary file is always cleaned up if the function returns early
+	defer os.Remove(tmpPath)
+
 	// 3. Download the new binary safely to /tmp
 	if err := downloadFile(tmpPath, downloadURL); err != nil {
 		color.Red("[x] Download failed: %v", err)
@@ -86,7 +98,6 @@ func SelfUpdate(currentVersion string) {
 	stat, err := os.Stat(tmpPath)
 	if err != nil || stat.Size() < 1024*1024 {
 		color.Red("[x] Downloaded file appears corrupted or too small. Aborting update.")
-		os.Remove(tmpPath)
 		return
 	}
 

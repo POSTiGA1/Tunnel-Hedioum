@@ -13,8 +13,8 @@ import (
 )
 
 // AppVersion defines the current build version for the self-updater
-// CRITICAL: This must match the GitHub Release Tag exactly (e.g., v0.3.1)
-const AppVersion = "v0.3.1"
+// CRITICAL: This must match the GitHub Release Tag exactly (e.g., v0.3.2)
+const AppVersion = "v0.3.2"
 
 func main() {
 	resetCfg := flag.Bool("reset", false, "Wipe the current configuration database and restart the setup wizard")
@@ -41,7 +41,11 @@ func main() {
 	if isInteractive {
 		if isFirstLaunch {
 			color.HiBlue("\n[*] Bootstrapping background daemon...")
-			_ = exec.Command("systemctl", "start", "hedioum.service").Run()
+			err := exec.Command("systemctl", "start", "hedioum.service").Run()
+			if err != nil {
+				// Soft warning for non-systemd environments (e.g., local dev testing)
+				color.Yellow("[-] Note: Could not auto-start systemd service. If not using systemd, start daemon manually.")
+			}
 			// Give systemd a moment to bind ports before showing the dashboard
 			time.Sleep(1 * time.Second)
 		}
@@ -53,6 +57,7 @@ func main() {
 		} else if cfg.Role == "iran" {
 			ingress.StartIranHub(cfg)
 		} else {
+			// Fail securely if role is corrupted or undefined
 			os.Exit(1)
 		}
 	}

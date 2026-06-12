@@ -43,7 +43,7 @@ LATEST_URL=$(curl -s https://api.github.com/repos/hedioum/Hedioum-Pool-Tunnel/re
 # Fallback URLs in case GitHub API is rate-limited or blocked
 if [ -z "$LATEST_URL" ]; then
     echo "[-] GitHub API rate-limited or blocked. Falling back to static release link..."
-    FALLBACK_VERSION="v0.3.1"
+    FALLBACK_VERSION="v0.3.2"
     LATEST_URL="https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/download/${FALLBACK_VERSION}/${TARGET_ASSET}"
 fi
 
@@ -82,14 +82,6 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-
-# --- Anti-Socket Activation Patch for Ubuntu 22.04+ ---
-if systemctl is-active --quiet ssh.socket; then
-    echo "[*] Disabling Ubuntu ssh.socket to free physical ports..."
-    systemctl stop ssh.socket > /dev/null 2>&1
-    systemctl disable ssh.socket > /dev/null 2>&1
-fi
-
 systemctl enable hedioum.service > /dev/null 2>&1
 
 echo "=================================================="
@@ -97,7 +89,6 @@ if [ ! -f "/etc/hedioum/hedioum.json" ]; then
     echo -e "[!] Fresh installation detected. Launching Initial Setup Wizard..."
     sleep 2
     cd /etc/hedioum && hedioum-tunnel
-    systemctl start hedioum.service
     echo -e "\n[✓] Setup complete! Hedioum Daemon is now running in the background."
 else
     echo "[✓] Existing configuration found. Applying seamless update..."
