@@ -1,0 +1,36 @@
+[Unit]
+Description=Hedioum Dynamic Pool Tunnel Daemon
+# Order after ssh so the decoy sshd banner can be mirrored on boot.
+After=network.target ssh.service sshd.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/hedioum
+# Open the listen port on the host firewall BEFORE the sandboxed daemon starts.
+# The '+' runs this step with full privileges (outside the sandbox below), which
+# the firewall edit needs; the long-running daemon itself stays locked down.
+ExecStartPre=+/usr/local/bin/hedioum-tunnel --open-firewall
+ExecStart=/usr/local/bin/hedioum-tunnel
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+# --- Sandbox hardening ---
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/etc/hedioum
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/fatih/color"
@@ -25,6 +26,14 @@ import (
 const AppVersion = "v0.5.0"
 
 func main() {
+	// Management subcommands (a non-flag first argument): install, setup-*, etc.
+	// The no-argument invocation (dashboard on a TTY / daemon under systemd) and
+	// the --reset/--open-firewall flags fall through to the logic below.
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		runSubcommand(os.Args[1], os.Args[2:])
+		return
+	}
+
 	resetCfg := flag.Bool("reset", false, "Wipe the current configuration database and restart the setup wizard")
 	openFW := flag.Bool("open-firewall", false, "Open the tunnel's listen port on the host firewall and exit (run privileged, e.g. from systemd ExecStartPre=+)")
 	flag.Parse()
