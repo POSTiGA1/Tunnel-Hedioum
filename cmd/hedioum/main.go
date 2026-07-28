@@ -16,14 +16,14 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/logging"
 )
 
-// AppVersion defines the current build version for the self-updater
-// CRITICAL: This must match the GitHub Release Tag exactly (e.g., v0.5.0)
+// AppVersion defines the current build version for the self-updater.
+// CRITICAL: This must match the GitHub Release Tag exactly (e.g., v0.6.0)
 //
-// v0.5.0 adds UDP (SOCKS5 UDP ASSOCIATE over the tunnel) and opt-in IPv6. It
-// carries a BREAKING wire change (a 1-byte stream type now prefixes every logical
-// stream), on top of v0.4.0's authenticated ChaCha20-Poly1305 transport. Nodes
-// must be updated together: the Iran Hub and the Foreign Egress.
-const AppVersion = "v0.5.0"
+// v0.6.0 is a NON-breaking feature release (wire protocol unchanged from v0.5.0,
+// so v0.5 and v0.6 nodes interoperate): structured slog logging, non-interactive
+// CLI + self-install, configurable decoy/listen ports, buffered banner reads, and
+// a ghp.ci-free, signature-free-but-robust self-update.
+const AppVersion = "v0.6.0"
 
 func main() {
 	// Management subcommands (a non-flag first argument): install, setup-*, etc.
