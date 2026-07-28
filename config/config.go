@@ -19,6 +19,9 @@ type AppConfig struct {
 	// optionally pins the source IP on multi-IP servers.
 	EgressIPMode string `json:"egress_ip_mode,omitempty"`
 	EgressBindIP string `json:"egress_bind_ip,omitempty"`
+	// DecoyPort is the local port the real sshd was relocated to; unauthorized
+	// probes on the public listen port are proxied here. Default 2022.
+	DecoyPort int `json:"decoy_port,omitempty"`
 
 	// Iran Node specific properties
 	ForeignNodes []ForeignNode `json:"foreign_nodes,omitempty"`
@@ -71,6 +74,9 @@ func LoadConfig() (*AppConfig, error) {
 	// Ensures existing deployments won't crash due to missing fields in old JSON configs.
 	if cfg.Role == "foreign" && cfg.EgressIPMode == "" {
 		cfg.EgressIPMode = "ipv4" // default: no IPv6 identity leak
+	}
+	if cfg.Role == "foreign" && cfg.DecoyPort == 0 {
+		cfg.DecoyPort = 2022 // default decoy sshd port
 	}
 	for i := range cfg.ForeignNodes {
 		if cfg.ForeignNodes[i].TargetPort == 0 {

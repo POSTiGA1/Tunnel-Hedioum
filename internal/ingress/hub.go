@@ -3,6 +3,7 @@ package ingress
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net"
 	"strconv"
@@ -13,7 +14,6 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/pool"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
-	"log/slog"
 )
 
 // StartIranHub initializes the SOCKS5 listeners and dynamically scaling connection

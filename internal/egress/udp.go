@@ -2,12 +2,12 @@ package egress
 
 import (
 	"errors"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
-	"log/slog"
 )
 
 const (

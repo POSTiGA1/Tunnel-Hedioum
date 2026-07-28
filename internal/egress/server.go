@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strconv"
 	"sync/atomic"
@@ -14,11 +15,9 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/securestream"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
-	"log/slog"
 )
 
 const (
-	decoySSHPrt = "127.0.0.1:2022"
 	dialTimeout = 10 * time.Second
 
 	egressIPv4 = "ipv4"
@@ -26,11 +25,13 @@ const (
 	egressDual = "dual"
 )
 
-// Egress dial policy, set once at StartForeignDaemon. Default is IPv4-only so a
-// misconfiguration can never leak the server's IPv6 identity.
+// Egress policy, set once at StartForeignDaemon. Defaults are IPv4-only egress
+// (so a misconfiguration can never leak the server's IPv6 identity) and the
+// conventional decoy sshd port 2022.
 var (
 	egressMode   = egressIPv4
 	egressBindIP net.IP // optional source IP to bind
+	decoyAddr    = "127.0.0.1:2022"
 )
 
 // StartForeignDaemon boots up the egress networking processes on the foreign server.
@@ -41,6 +42,9 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 	}
 	if cfg.EgressBindIP != "" {
 		egressBindIP = net.ParseIP(cfg.EgressBindIP)
+	}
+	if cfg.DecoyPort != 0 {
+		decoyAddr = fmt.Sprintf("127.0.0.1:%d", cfg.DecoyPort)
 	}
 
 	// Dynamically bind to the configured port or fallback to 22
@@ -58,12 +62,12 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 	}
 
 	slog.Info("egress daemon listening", "addr", listenAddr, "egress_mode", egressMode)
-	slog.Info("decoy target set", "decoy", decoySSHPrt)
+	slog.Info("decoy target set", "decoy", decoyAddr)
 
 	// Mirror the real sshd banner so a genuine SSH client (password or key) routed
 	// to the decoy still completes key exchange on the public port. Kept fresh so
 	// it survives boot races (sshd not up yet) and sshd upgrades.
-	banner := newDecoyBannerMirror(decoySSHPrt)
+	banner := newDecoyBannerMirror(decoyAddr)
 
 	// Bounded, TTL'd replay protection for the authentication handshake.
 	replayFilter := securestream.NewReplayFilter(0)
@@ -168,7 +172,7 @@ func proxyToDecoy(clientConn net.Conn) {
 	defer clientConn.Close()
 
 	// Dial the real SSH daemon we moved to port 2022
-	decoyConn, err := net.DialTimeout("tcp", decoySSHPrt, 5*time.Second)
+	decoyConn, err := net.DialTimeout("tcp", decoyAddr, 5*time.Second)
 	if err != nil {
 		return
 	}
