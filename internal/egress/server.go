@@ -1,11 +1,11 @@
 package egress
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -14,21 +14,42 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/securestream"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
 
 const (
 	decoySSHPrt = "127.0.0.1:2022"
 	dialTimeout = 10 * time.Second
+
+	egressIPv4 = "ipv4"
+	egressIPv6 = "ipv6"
+	egressDual = "dual"
+)
+
+// Egress dial policy, set once at StartForeignDaemon. Default is IPv4-only so a
+// misconfiguration can never leak the server's IPv6 identity.
+var (
+	egressMode   = egressIPv4
+	egressBindIP net.IP // optional source IP to bind
 )
 
 // StartForeignDaemon boots up the egress networking processes on the foreign server.
 func StartForeignDaemon(cfg *config.AppConfig) {
+	// Apply the egress dial policy (how we reach the open internet).
+	if cfg.EgressIPMode != "" {
+		egressMode = cfg.EgressIPMode
+	}
+	if cfg.EgressBindIP != "" {
+		egressBindIP = net.ParseIP(cfg.EgressBindIP)
+	}
+
 	// Dynamically bind to the configured port or fallback to 22
 	listenPort := 22
 	if cfg.ForeignListenPort != 0 {
 		listenPort = cfg.ForeignListenPort
 	}
-	listenAddr := fmt.Sprintf("0.0.0.0:%d", listenPort)
+	// Dual-stack listen (":port") so an Iran hub can reach us over IPv4 or IPv6.
+	listenAddr := fmt.Sprintf(":%d", listenPort)
 
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -36,7 +57,7 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 		return
 	}
 
-	color.Green("[✓] Foreign Egress Daemon actively listening on %s", listenAddr)
+	color.Green("[✓] Foreign Egress Daemon actively listening on %s (egress mode: %s)", listenAddr, egressMode)
 	color.Cyan("[i] Real SSH daemon decoy target set to %s", decoySSHPrt)
 
 	// Mirror the real sshd banner so a genuine SSH client (password or key) routed
@@ -188,28 +209,33 @@ func handleYamuxSession(session *yamux.Session) {
 	}
 }
 
-// handleLogicalStream reads the metadata (target address) and pipes data to the internet.
+// handleLogicalStream dispatches a logical stream on its leading type byte:
+// TCP CONNECT is piped to the internet; UDP ASSOCIATE is relayed as datagrams.
 func handleLogicalStream(stream net.Conn) {
 	defer stream.Close()
 
-	// 1. Read Metadata: [2 bytes Length] + [Target Address String]
-	lenBuf := make([]byte, 2)
-	if _, err := io.ReadFull(stream, lenBuf); err != nil {
+	streamType, err := tunproto.ReadStreamType(stream)
+	if err != nil {
+		return
+	}
+	switch streamType {
+	case tunproto.StreamTCP:
+		handleTCPStream(stream)
+	case tunproto.StreamUDP:
+		handleUDPStream(stream)
+	default:
+		// Unknown stream type: drop.
+	}
+}
+
+// handleTCPStream reads the target address and pipes data to the internet.
+func handleTCPStream(stream net.Conn) {
+	targetAddr, err := tunproto.ReadTCPTarget(stream)
+	if err != nil {
 		return
 	}
 
-	targetLen := binary.BigEndian.Uint16(lenBuf)
-	if targetLen == 0 || targetLen > 2048 {
-		return // Sanity check to prevent buffer overflow
-	}
-
-	targetBuf := make([]byte, targetLen)
-	if _, err := io.ReadFull(stream, targetBuf); err != nil {
-		return
-	}
-	targetAddr := string(targetBuf)
-
-	// 2. SSRF-safe dial: resolve once, vet the address, and dial that exact IP
+	// SSRF-safe dial: resolve once, vet the address, and dial that exact IP
 	// (no second lookup -> no DNS rebinding). Fails closed on resolution errors.
 	remoteConn, err := safeDialTarget(targetAddr)
 	if err != nil {
@@ -238,46 +264,119 @@ func handleLogicalStream(stream net.Conn) {
 // (SSRF attempt), as opposed to an ordinary resolution/dial failure.
 var errBlockedTarget = errors.New("blocked non-global target")
 
-// safeDialTarget resolves the target host at most once, rejects any address that
-// is not a global unicast internet address, and dials the vetted IP directly.
-// Dialing the resolved IP (rather than re-resolving the hostname) closes the
-// DNS-rebinding TOCTOU. Resolution failures fail closed.
+// vetted resolves host at most once to a safe, dialable IP of the family allowed
+// by the egress mode. It single-sources the SSRF policy for both TCP and UDP:
+// dialing the resolved IP (rather than re-resolving) closes the DNS-rebinding
+// TOCTOU, and it fails closed on resolution errors. Returns the IP and whether it
+// is IPv4.
+func vetted(host string) (net.IP, bool, error) {
+	// IP literal.
+	if ip := net.ParseIP(host); ip != nil {
+		if !isDialableIP(ip) {
+			return nil, false, fmt.Errorf("%w %s", errBlockedTarget, host)
+		}
+		return pickFamily([]net.IP{ip}, host)
+	}
+
+	// Hostname: resolve once; reject the whole target if ANY resolved address is
+	// non-global (defends against split-horizon answers mixing public + internal).
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve %s: %w", host, err)
+	}
+	for _, ip := range ips {
+		if !isDialableIP(ip) {
+			return nil, false, fmt.Errorf("%w %s (%s)", errBlockedTarget, host, ip)
+		}
+	}
+	return pickFamily(ips, host)
+}
+
+// pickFamily selects a vetted IP honoring the egress family mode. In "dual" and
+// the default "ipv4" mode IPv4 is preferred; "ipv6" forces IPv6.
+func pickFamily(ips []net.IP, host string) (net.IP, bool, error) {
+	var v4, v6 net.IP
+	for _, ip := range ips {
+		if ip4 := ip.To4(); ip4 != nil {
+			if v4 == nil {
+				v4 = ip4
+			}
+		} else if v6 == nil {
+			v6 = ip
+		}
+	}
+	switch egressMode {
+	case egressIPv6:
+		if v6 != nil {
+			return v6, false, nil
+		}
+		return nil, false, fmt.Errorf("no IPv6 address for %s", host)
+	case egressDual:
+		if v4 != nil {
+			return v4, true, nil
+		}
+		if v6 != nil {
+			return v6, false, nil
+		}
+		return nil, false, fmt.Errorf("no dialable address for %s", host)
+	default: // ipv4
+		if v4 != nil {
+			return v4, true, nil
+		}
+		return nil, false, fmt.Errorf("no IPv4 address for %s", host)
+	}
+}
+
+// bindAddrTCP returns the source address to bind, if egressBindIP matches family.
+func bindAddrTCP(isV4 bool) *net.TCPAddr {
+	if egressBindIP != nil && (egressBindIP.To4() != nil) == isV4 {
+		return &net.TCPAddr{IP: egressBindIP}
+	}
+	return nil
+}
+
+// safeDialTarget vets the TCP target and dials the exact vetted IP.
 func safeDialTarget(target string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, fmt.Errorf("invalid target %q: %w", target, err)
 	}
-
-	// IP literal: vet and dial directly.
-	if ip := net.ParseIP(host); ip != nil {
-		if !isDialableIP(ip) {
-			return nil, fmt.Errorf("%w %s", errBlockedTarget, host)
-		}
-		return net.DialTimeout("tcp4", net.JoinHostPort(host, port), dialTimeout)
-	}
-
-	// Hostname: resolve once, then dial a vetted IPv4 literal.
-	ips, err := net.LookupIP(host)
+	ip, isV4, err := vetted(host)
 	if err != nil {
-		return nil, fmt.Errorf("resolve %s: %w", host, err)
+		return nil, err
 	}
-	var chosen net.IP
-	for _, ip := range ips {
-		// Reject the whole target if ANY resolved address is non-global (defends
-		// against split-horizon answers mixing a public and an internal IP).
-		if !isDialableIP(ip) {
-			return nil, fmt.Errorf("%w %s (%s)", errBlockedTarget, host, ip)
-		}
-		if chosen == nil {
-			if ip4 := ip.To4(); ip4 != nil {
-				chosen = ip4
-			}
-		}
+	network := "tcp6"
+	if isV4 {
+		network = "tcp4"
 	}
-	if chosen == nil {
-		return nil, fmt.Errorf("no dialable IPv4 address for %s", host)
+	d := net.Dialer{Timeout: dialTimeout, LocalAddr: bindAddrTCP(isV4)}
+	return d.Dial(network, net.JoinHostPort(ip.String(), port))
+}
+
+// safeDialUDP vets the UDP target and returns a connected UDP socket to the exact
+// vetted IP (same SSRF policy as TCP; connected so only the target can reply).
+func safeDialUDP(target string) (*net.UDPConn, error) {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return nil, fmt.Errorf("invalid target %q: %w", target, err)
 	}
-	return net.DialTimeout("tcp4", net.JoinHostPort(chosen.String(), port), dialTimeout)
+	ip, isV4, err := vetted(host)
+	if err != nil {
+		return nil, err
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		return nil, fmt.Errorf("invalid port %q: %w", port, err)
+	}
+	network := "udp6"
+	if isV4 {
+		network = "udp4"
+	}
+	var laddr *net.UDPAddr
+	if egressBindIP != nil && (egressBindIP.To4() != nil) == isV4 {
+		laddr = &net.UDPAddr{IP: egressBindIP}
+	}
+	return net.DialUDP(network, laddr, &net.UDPAddr{IP: ip, Port: p})
 }
 
 // isDialableIP reports whether ip is a public, global unicast internet address

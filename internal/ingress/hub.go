@@ -1,7 +1,6 @@
 package ingress
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"math/rand"
@@ -14,6 +13,7 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/pool"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
 
 // StartIranHub initializes the SOCKS5 listeners and dynamically scaling connection
@@ -122,51 +122,53 @@ func startLocalSocksListener(node config.ForeignNode, hubManager *pool.HubManage
 func handleClientTraffic(localConn net.Conn, nodeAlias string, hubManager *pool.HubManager) {
 	defer localConn.Close()
 
-	// 1. Process SOCKS5 and extract the ultimate internet destination (e.g., "youtube.com:443")
-	targetDest, err := HandleSocks5Handshake(localConn)
+	// 1. Negotiate SOCKS5 and read the request (command + destination).
+	cmd, dst, err := readSocksRequest(localConn)
 	if err != nil {
 		// Silently drop bad requests/scanners to conserve CPU and RAM
 		return
 	}
 
-	// 2. Request a multiplexed logical stream from the auto-scaling connection pool
-	rawStream, err := hubManager.GetStream(nodeAlias)
+	switch cmd {
+	case cmdConnect:
+		// Reply success (BND 0.0.0.0:0) and pipe the TCP stream.
+		if err := sendSocksReply(localConn, repSuccess, net.IPv4zero, 0); err != nil {
+			return
+		}
+		_ = localConn.SetDeadline(time.Time{}) // drop the handshake deadline for the tunnel
+		handleTCPConnect(localConn, dst, nodeAlias, hubManager)
+	case cmdUDPAssociate:
+		handleUDPAssociate(localConn, nodeAlias, hubManager)
+	default:
+		_ = sendSocksReply(localConn, repCmdNotSupported, net.IPv4zero, 0)
+	}
+}
+
+// handleTCPConnect multiplexes a SOCKS5 CONNECT over a Yamux stream to the egress.
+func handleTCPConnect(localConn net.Conn, targetDest, nodeAlias string, hubManager *pool.HubManager) {
+	// Request a multiplexed logical stream from the TCP sub-pool.
+	stream, err := hubManager.GetStreamTCP(nodeAlias)
 	if err != nil {
-		// If the pool is temporarily exhausted or dead, drop the client connection silently.
-		// X-UI/V2ray core will automatically queue and retry.
+		// Pool temporarily exhausted or dead: drop; X-UI/Xray core retries.
 		return
 	}
-
-	stream := rawStream.(net.Conn)
 	defer stream.Close()
 
-	// 3. Inject the logical stream metadata (Target Address) as the very first bytes of the stream
-	targetBytes := []byte(targetDest)
-	lenBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(lenBuf, uint16(len(targetBytes)))
-
-	// Write structure: [2 bytes Metadata Length] + [Metadata String]
-	if _, err := stream.Write(lenBuf); err != nil {
-		return
-	}
-	if _, err := stream.Write(targetBytes); err != nil {
+	// Announce the stream as a TCP CONNECT and inject the target address:
+	// [StreamTCP][u16 len][target]
+	if err := tunproto.WriteTCPHeader(stream, targetDest); err != nil {
 		return
 	}
 
-	// 4. Initiate full-duplex piping between the local X-UI connection and the Yamux logical stream
+	// Full-duplex pipe between the local X-UI connection and the Yamux stream.
 	errChan := make(chan error, 2)
-
 	go func() {
 		_, err := io.Copy(stream, localConn)
 		errChan <- err
 	}()
-
 	go func() {
 		_, err := io.Copy(localConn, stream)
 		errChan <- err
 	}()
-
-	// Wait for either side to close the connection or encounter an error.
-	// We do not log these errors as they are standard behavior (e.g., user closing a tab).
 	<-errChan
 }
