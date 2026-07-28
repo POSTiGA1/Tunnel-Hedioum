@@ -1,6 +1,8 @@
 package mimic
 
 import (
+	"bytes"
+	"crypto/rand"
 	"io"
 	"net"
 	"strings"
@@ -9,6 +11,71 @@ import (
 
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/securestream"
 )
+
+// TestHandshakeLargeTransferTCP drives several MB through the full mimic + bufio +
+// securestream path, echoed back, to prove the shared bufio.Reader never loses or
+// corrupts data — including AEAD frames larger than the bufio buffer.
+func TestHandshakeLargeTransferTCP(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	const token = "large-transfer-secret"
+	payload := make([]byte, 3*1024*1024+777)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+
+	srvErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			srvErr <- err
+			return
+		}
+		sc, _, err := PerformServerHandshake(conn, token, securestream.NewReplayFilter(0), "")
+		if err != nil {
+			srvErr <- err
+			return
+		}
+		got := make([]byte, len(payload))
+		if _, err := io.ReadFull(sc, got); err != nil {
+			srvErr <- err
+			return
+		}
+		if !bytes.Equal(got, payload) {
+			srvErr <- io.ErrUnexpectedEOF // signal mismatch
+			return
+		}
+		_, err = sc.Write(got) // echo
+		srvErr <- err
+	}()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	sc, err := PerformClientHandshake(conn, token)
+	if err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+	go func() { _, _ = io.Copy(sc, bytes.NewReader(payload)) }()
+
+	echo := make([]byte, len(payload))
+	if _, err := io.ReadFull(sc, echo); err != nil {
+		t.Fatalf("client read echo: %v", err)
+	}
+	if !bytes.Equal(echo, payload) {
+		t.Fatal("echoed payload mismatch")
+	}
+	if err := <-srvErr; err != nil {
+		t.Fatalf("server side: %v", err)
+	}
+}
 
 // TestHandshakeRoundTripTCP verifies banner exchange + AEAD upgrade + data flow
 // over a real TCP connection when both sides share the token.
@@ -175,7 +242,7 @@ func TestServerPresentsMirroredBanner(t *testing.T) {
 	}
 	defer conn.Close()
 
-	got, err := readBanner(conn)
+	got, err := readBannerConn(conn)
 	if err != nil {
 		t.Fatal(err)
 	}

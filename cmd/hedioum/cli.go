@@ -29,6 +29,8 @@ func runSubcommand(name string, args []string) {
 		cmdInstall(args)
 	case "uninstall":
 		cmdUninstall(args)
+	case "update":
+		cmdUpdate(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -46,6 +48,7 @@ Usage:
   hedioum-tunnel version              Print version and build info
   hedioum-tunnel install              Install/enable the systemd service (self-copy)
   hedioum-tunnel uninstall [--yes]    Stop, disable, and remove everything
+  hedioum-tunnel update [--file PATH]  Update from GitHub, or from a local binary
 
   hedioum-tunnel setup-foreign [flags]   Write the foreign (egress) config
       --listen-port N (default 22)  --decoy-port N (default 2022)

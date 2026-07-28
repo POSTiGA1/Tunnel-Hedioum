@@ -75,6 +75,19 @@ func copyExecutable(src, dst string) error {
 	return os.Rename(tmp, dst) // atomic replace
 }
 
+// cmdUpdate updates the binary from GitHub, or installs a locally-provided one
+// (--file) when GitHub is blocked. Both use the backup/rollback flow.
+func cmdUpdate(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	file := fs.String("file", "", "install from a local binary instead of downloading")
+	_ = fs.Parse(args)
+	if *file != "" {
+		sysutil.UpdateFromFile(*file)
+		return
+	}
+	sysutil.SelfUpdate(AppVersion)
+}
+
 // cmdUninstall stops, disables, and removes everything (non-interactive with --yes).
 func cmdUninstall(args []string) {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)

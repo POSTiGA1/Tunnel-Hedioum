@@ -22,11 +22,11 @@ func handshakePair(t *testing.T, clientTok, serverTok string, filter *ReplayFilt
 	}
 	srvCh := make(chan res, 1)
 	go func() {
-		sc, err := ServerHandshake(s, serverTok, filter)
+		sc, err := ServerHandshake(s, s, serverTok, filter)
 		srvCh <- res{sc, err}
 	}()
 
-	cli, cerr := ClientHandshake(c, clientTok)
+	cli, cerr := ClientHandshake(c, c, clientTok)
 	sr := <-srvCh
 
 	if cerr != nil {
@@ -92,12 +92,12 @@ func TestWrongTokenFailsAuth(t *testing.T) {
 	c, s := net.Pipe()
 	srvErr := make(chan error, 1)
 	go func() {
-		_, err := ServerHandshake(s, "server-token", nil)
+		_, err := ServerHandshake(s, s, "server-token", nil)
 		s.Close()
 		srvErr <- err
 	}()
 	go func() {
-		if cli, err := ClientHandshake(c, "client-token"); err == nil {
+		if cli, err := ClientHandshake(c, c, "client-token"); err == nil {
 			cli.Close()
 		}
 		c.Close()
@@ -163,7 +163,7 @@ func (s *sizeRecorder) Write(p []byte) (int, error) {
 // fingerprinted by size.
 func TestPaddingVariesFrameSize(t *testing.T) {
 	rec := &sizeRecorder{}
-	sc := newSecureConn(rec)
+	sc := newSecureConn(rec, nil)
 	aead, err := chacha20poly1305.New(make([]byte, keySize))
 	if err != nil {
 		t.Fatal(err)

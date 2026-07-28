@@ -63,6 +63,11 @@ var (
 type SecureConn struct {
 	net.Conn
 
+	// reader is the source for all decrypted reads. It is a bufio.Reader shared
+	// with the banner exchange so any bytes buffered past the banner (salt/first
+	// frame) are not lost. Writes still go to the embedded net.Conn.
+	reader io.Reader
+
 	readMu   sync.Mutex
 	rAEAD    cipher.AEAD
 	rNonce   [nonceSize]byte
@@ -94,8 +99,9 @@ func incrementNonce(n *[nonceSize]byte) {
 
 // ClientHandshake performs the client side of the upgrade over an already
 // banner-exchanged connection: it sends its salt + an authentication frame,
-// then reads the server's salt. token is the pre-shared secret (never sent).
-func ClientHandshake(conn net.Conn, token string) (*SecureConn, error) {
+// then reads the server's salt. Reads come from r (the buffered reader shared
+// with the banner exchange); writes go to conn. token is the pre-shared secret.
+func ClientHandshake(conn net.Conn, r io.Reader, token string) (*SecureConn, error) {
 	_ = conn.SetDeadline(time.Now().Add(hsDeadline))
 	defer conn.SetDeadline(time.Time{})
 
@@ -118,7 +124,7 @@ func ClientHandshake(conn net.Conn, token string) (*SecureConn, error) {
 		return nil, err
 	}
 
-	sc := newSecureConn(conn)
+	sc := newSecureConn(conn, r)
 	sc.wAEAD = wAEAD
 
 	// 2. Send the authentication frame: the magic marker, proven authentic by its
@@ -130,7 +136,7 @@ func ClientHandshake(conn net.Conn, token string) (*SecureConn, error) {
 
 	// 3. Read the server salt and derive the read key.
 	saltS := make([]byte, saltSize)
-	if _, err := io.ReadFull(conn, saltS); err != nil {
+	if _, err := io.ReadFull(r, saltS); err != nil {
 		return nil, fmt.Errorf("read server salt: %w", err)
 	}
 	rKey, err := deriveKey(psk, saltS)
@@ -149,7 +155,7 @@ func ClientHandshake(conn net.Conn, token string) (*SecureConn, error) {
 // ServerHandshake performs the server side of the upgrade. It reads the client
 // salt + auth frame; on any authentication failure it returns ErrAuth so the
 // caller can divert to the decoy. filter may be nil to skip replay protection.
-func ServerHandshake(conn net.Conn, token string, filter *ReplayFilter) (*SecureConn, error) {
+func ServerHandshake(conn net.Conn, r io.Reader, token string, filter *ReplayFilter) (*SecureConn, error) {
 	_ = conn.SetDeadline(time.Now().Add(hsDeadline))
 	defer conn.SetDeadline(time.Time{})
 
@@ -157,7 +163,7 @@ func ServerHandshake(conn net.Conn, token string, filter *ReplayFilter) (*Secure
 
 	// 1. Read the client salt and derive the read key.
 	saltC := make([]byte, saltSize)
-	if _, err := io.ReadFull(conn, saltC); err != nil {
+	if _, err := io.ReadFull(r, saltC); err != nil {
 		return nil, fmt.Errorf("read client salt: %w", err)
 	}
 	rKey, err := deriveKey(psk, saltC)
@@ -169,7 +175,7 @@ func ServerHandshake(conn net.Conn, token string, filter *ReplayFilter) (*Secure
 		return nil, err
 	}
 
-	sc := newSecureConn(conn)
+	sc := newSecureConn(conn, r)
 	sc.rAEAD = rAEAD
 
 	// 2. Read + verify the authentication frame. A wrong PSK yields a wrong key
@@ -209,9 +215,13 @@ func ServerHandshake(conn net.Conn, token string, filter *ReplayFilter) (*Secure
 	return sc, nil
 }
 
-func newSecureConn(conn net.Conn) *SecureConn {
+func newSecureConn(conn net.Conn, r io.Reader) *SecureConn {
+	if r == nil {
+		r = conn
+	}
 	return &SecureConn{
 		Conn:    conn,
+		reader:  r,
 		lenBuf:  make([]byte, lenHdrLen+tagSize),
 		payBuf:  make([]byte, maxChunk+tagSize),
 		padBuf:  make([]byte, maxPad),
@@ -273,7 +283,7 @@ func (c *SecureConn) Write(p []byte) (int, error) {
 // returns the payload as a slice into c.payBuf.
 func (c *SecureConn) readChunk() ([]byte, error) {
 	// Length header.
-	if _, err := io.ReadFull(c.Conn, c.lenBuf); err != nil {
+	if _, err := io.ReadFull(c.reader, c.lenBuf); err != nil {
 		return nil, err
 	}
 	hdr, err := c.rAEAD.Open(c.lenBuf[:0], c.rNonce[:], c.lenBuf, nil)
@@ -289,7 +299,7 @@ func (c *SecureConn) readChunk() ([]byte, error) {
 
 	// Payload block.
 	enc := c.payBuf[:payloadLen+tagSize]
-	if _, err := io.ReadFull(c.Conn, enc); err != nil {
+	if _, err := io.ReadFull(c.reader, enc); err != nil {
 		return nil, err
 	}
 	plain, err := c.rAEAD.Open(enc[:0], c.rNonce[:], enc, nil)
@@ -300,7 +310,7 @@ func (c *SecureConn) readChunk() ([]byte, error) {
 
 	// Discard the trailing random padding.
 	if padLen > 0 {
-		if _, err := io.ReadFull(c.Conn, c.padBuf[:padLen]); err != nil {
+		if _, err := io.ReadFull(c.reader, c.padBuf[:padLen]); err != nil {
 			return nil, err
 		}
 	}

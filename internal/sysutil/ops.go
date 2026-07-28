@@ -2,6 +2,8 @@ package sysutil
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,9 +16,13 @@ import (
 const (
 	binaryPath = "/usr/local/bin/hedioum-tunnel"
 	backupPath = "/usr/local/bin/hedioum-tunnel.bak"
-	tmpPath    = "/tmp/hedioum-tunnel-new"
-	repoAPI    = "https://api.github.com/repos/hedioum/Hedioum-Pool-Tunnel/releases/latest"
-	proxyURL   = "https://ghp.ci/"
+	// stagePath is deliberately in the SAME directory as binaryPath so the final
+	// swap is an atomic same-filesystem rename (a /tmp staging area risks EXDEV).
+	stagePath = "/usr/local/bin/hedioum-tunnel.new"
+	repoAPI   = "https://api.github.com/repos/hedioum/Hedioum-Pool-Tunnel/releases/latest"
+
+	minBinarySize    = 1024 * 1024 // sanity floor for a real binary
+	downloadAttempts = 3
 )
 
 // GitHubRelease represents the structure of the GitHub API response
@@ -28,122 +34,163 @@ type GitHubRelease struct {
 	} `json:"assets"`
 }
 
-// SelfUpdate orchestrates a safe zero-downtime update with an automatic rollback mechanism.
+// SelfUpdate downloads and installs a newer release from GitHub, with retries,
+// a semver "is-newer" check, and automatic rollback. When GitHub is unreachable
+// (e.g. filtered) it prints the manual path: download the binary and run
+// `hedioum-tunnel update --file /path`.
 func SelfUpdate(currentVersion string) {
-	color.Cyan("[*] Checking for updates (Timeout: 5s)...")
+	color.Cyan("[*] Checking for updates...")
 
-	// 1. Fetch latest release info
-	client := http.Client{
-		Timeout: 5 * time.Second,
-	}
-	resp, err := client.Get(repoAPI)
+	release, err := fetchLatestRelease()
 	if err != nil {
-		color.Red("[x] Failed to contact GitHub API: %v", err)
-		color.Yellow("    (This is common on restricted networks. Ensure your server can reach GitHub).")
+		color.Red("[x] Failed to query GitHub: %v", err)
+		manualHint()
 		return
 	}
-	defer resp.Body.Close()
-
-	// CRITICAL FIX: Ensure the API returned a 200 OK status before parsing
-	if resp.StatusCode != http.StatusOK {
-		color.Red("[x] GitHub API returned an error: HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
-		if resp.StatusCode == http.StatusForbidden {
-			color.Yellow("    [-] You have likely hit the GitHub API rate limit. Please try again later.")
-		}
-		return
-	}
-
-	var release GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		color.Red("[x] Failed to parse GitHub API response: %v", err)
-		return
-	}
-
-	if release.TagName == "" || release.TagName == currentVersion {
+	if release.TagName == "" || !IsNewer(release.TagName, currentVersion) {
 		color.Green("[✓] You are already running the latest version (%s).", currentVersion)
 		return
 	}
 
-	// 2. Detect OS Architecture to select the correct binary
-	targetAsset := "hedioum-tunnel"
-	if runtime.GOARCH == "arm64" {
-		targetAsset = "hedioum-tunnel-arm64"
+	asset := targetAsset()
+	url := assetURL(release, asset)
+	if url == "" {
+		color.Red("[x] Release %s has no '%s' binary.", release.TagName, asset)
+		return
 	}
 
-	var downloadURL string
-	for _, asset := range release.Assets {
-		if asset.Name == targetAsset {
-			downloadURL = asset.BrowserDownloadURL
-			break
+	color.Yellow("[*] New version %s found. Downloading (%d attempts)...", release.TagName, downloadAttempts)
+	defer os.Remove(stagePath)
+	if err := downloadWithRetry(url, stagePath, downloadAttempts); err != nil {
+		color.Red("[x] Download failed: %v", err)
+		manualHint()
+		return
+	}
+	installStaged(release.TagName)
+}
+
+// UpdateFromFile installs a locally-provided binary (the manual fallback when
+// GitHub is blocked), using the same backup/rollback flow.
+func UpdateFromFile(path string) {
+	color.Cyan("[*] Installing from %s ...", path)
+	if err := copyFile(path, stagePath); err != nil {
+		color.Red("[x] Could not read %s: %v", path, err)
+		return
+	}
+	defer os.Remove(stagePath)
+	installStaged("manual:" + path)
+}
+
+// fetchLatestRelease queries the GitHub releases API.
+func fetchLatestRelease() (*GitHubRelease, error) {
+	client := http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Get(repoAPI)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("HTTP 403 (likely API rate limit); try later")
+		}
+		return nil, fmt.Errorf("HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+	var release GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, err
+	}
+	return &release, nil
+}
+
+func targetAsset() string {
+	if runtime.GOARCH == "arm64" {
+		return "hedioum-tunnel-arm64"
+	}
+	return "hedioum-tunnel"
+}
+
+func assetURL(release *GitHubRelease, name string) string {
+	for _, a := range release.Assets {
+		if a.Name == name {
+			return a.BrowserDownloadURL
 		}
 	}
+	return ""
+}
 
-	if downloadURL == "" {
-		color.Red("[x] Could not find '%s' binary in the latest release.", targetAsset)
+// downloadWithRetry downloads url to dst directly from GitHub, retrying transient
+// failures. No third-party proxy is used.
+func downloadWithRetry(url, dst string, attempts int) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			color.Yellow("[-] Attempt %d failed; retrying...", i)
+			time.Sleep(2 * time.Second)
+		}
+		if err = exec.Command("curl", "-f", "-L", "-s", "-o", dst, url).Run(); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func manualHint() {
+	color.Yellow("    GitHub may be blocked. Download '%s' manually and run:", targetAsset())
+	color.HiWhite("      hedioum-tunnel update --file /path/to/%s", targetAsset())
+}
+
+// installStaged swaps stagePath into place with backup + restart + health-check +
+// rollback. stagePath and binaryPath share a directory, so the swap is atomic.
+func installStaged(label string) {
+	if st, err := os.Stat(stagePath); err != nil || st.Size() < minBinarySize {
+		color.Red("[x] Staged binary missing or too small; aborting update.")
 		return
 	}
+	os.Chmod(stagePath, 0755)
 
-	color.Yellow("[*] New version found: %s. Starting safe update...", release.TagName)
-
-	// CRITICAL FIX: Ensure the temporary file is always cleaned up if the function returns early
-	defer os.Remove(tmpPath)
-
-	// 3. Download the new binary safely to /tmp
-	if err := downloadFile(tmpPath, downloadURL); err != nil {
-		color.Red("[x] Download failed: %v", err)
-		return
-	}
-
-	// Integrity check
-	stat, err := os.Stat(tmpPath)
-	if err != nil || stat.Size() < 1024*1024 {
-		color.Red("[x] Downloaded file appears corrupted or too small. Aborting update.")
-		return
-	}
-
-	// 4. Backup current working binary
-	color.Cyan("[*] Creating backup of current version...")
+	color.Cyan("[*] Backing up the current binary...")
 	if err := os.Rename(binaryPath, backupPath); err != nil {
 		color.Red("[x] Failed to create backup: %v", err)
 		return
 	}
-
-	// 5. Install new binary
-	if err := os.Rename(tmpPath, binaryPath); err != nil {
-		color.Red("[x] Failed to deploy new binary. Rolling back...")
+	if err := os.Rename(stagePath, binaryPath); err != nil {
+		color.Red("[x] Failed to deploy new binary; rolling back...")
 		rollback()
 		return
 	}
 	os.Chmod(binaryPath, 0755)
 
-	// 6. Restart service and Verify
-	color.Cyan("[*] Restarting daemon to apply version %s...", release.TagName)
+	color.Cyan("[*] Restarting daemon...")
 	exec.Command("systemctl", "restart", "hedioum.service").Run()
 	time.Sleep(2 * time.Second)
-
-	// 7. Health Check & Rollback
 	if err := exec.Command("systemctl", "is-active", "--quiet", "hedioum.service").Run(); err != nil {
-		color.HiRed("[!] CRITICAL: New version crashed upon startup. Initiating auto-rollback!")
+		color.HiRed("[!] New version failed to start; rolling back!")
 		rollback()
 		return
 	}
 
-	// Cleanup backup on success
 	os.Remove(backupPath)
-	color.Green("\n[✓] Update successful! Hedioum Daemon is now running %s.", release.TagName)
+	color.Green("\n[✓] Update successful (%s).", label)
 }
 
-// downloadFile tries the direct link, and falls back to a proxy if blocked
-func downloadFile(filepath string, url string) error {
-	cmd := exec.Command("curl", "-f", "-L", "-s", "-o", filepath, url)
-	if err := cmd.Run(); err == nil {
-		return nil
+// copyFile copies src to dst (used for the manual --file path; handles src on a
+// different filesystem than dst).
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
 	}
-
-	color.Yellow("[-] Direct download failed. Attempting via proxy fallback...")
-	proxyLink := proxyURL + url
-	cmdProxy := exec.Command("curl", "-f", "-L", "-s", "-o", filepath, proxyLink)
-	return cmdProxy.Run()
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	return out.Close()
 }
 
 // rollback restores the previous binary and restarts the service
