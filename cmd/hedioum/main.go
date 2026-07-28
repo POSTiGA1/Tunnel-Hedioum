@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"log/slog"
 	"os"
 	"os/exec"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/egress"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/firewall"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/ingress"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/logging"
 )
 
 // AppVersion defines the current build version for the self-updater
@@ -63,13 +65,16 @@ func main() {
 		}
 		runInteractiveDashboard(cfg)
 	} else {
-		// Headless Daemon Execution (Systemd)
+		// Headless Daemon Execution (Systemd): structured logs to journald.
+		logging.Init(false) // level via HEDIOUM_LOG_LEVEL (debug|info|warn|error)
+		slog.Info("hedioum daemon starting", "version", AppVersion, "role", cfg.Role)
 		if cfg.Role == "foreign" {
 			egress.StartForeignDaemon(cfg)
 		} else if cfg.Role == "iran" {
 			ingress.StartIranHub(cfg)
 		} else {
 			// Fail securely if role is corrupted or undefined
+			slog.Error("undefined role in config; refusing to start", "role", cfg.Role)
 			os.Exit(1)
 		}
 	}
