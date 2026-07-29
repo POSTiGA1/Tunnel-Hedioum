@@ -88,21 +88,15 @@ func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *
 func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) (mimic.ServerMimic, error) {
 	switch ml.Type {
 	case "tls":
-		cert, err := tlscert.LoadOrCreate(tlsCertDir, ml.ServerName)
+		return buildServerTLS(cfg, ml, filter)
+	case "smtp", "imap":
+		// STARTTLS: a plaintext mail-protocol prologue upgrades to the same TLS
+		// mimic, so the wire looks like a mail server negotiating STARTTLS.
+		tlsMimic, err := buildServerTLS(cfg, ml, filter)
 		if err != nil {
 			return nil, err
 		}
-		fp, err := tlscert.LeafFingerprint(&cert)
-		if err != nil {
-			return nil, err
-		}
-		return &mimic.TLSMimic{
-			Token:     cfg.AuthToken,
-			Filter:    filter,
-			TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
-			CertFP:    fp,
-			DecoyAddr: ml.Decoy, // "" -> built-in web page
-		}, nil
+		return &mimic.StartTLSMimic{Proto: ml.Type, TLS: tlsMimic}, nil
 	default: // "ssh"
 		decoy := ml.Decoy
 		if decoy == "" {
@@ -113,6 +107,26 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 		banner := newDecoyBannerMirror(decoy)
 		return &mimic.SSHMimic{Token: cfg.AuthToken, Filter: filter, DecoyAddr: decoy, Banner: banner.get}, nil
 	}
+}
+
+// buildServerTLS constructs a TLS mimic (self-signed cert + channel-bound auth),
+// reused directly for the "tls" listener and under the STARTTLS mail mimics.
+func buildServerTLS(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) (*mimic.TLSMimic, error) {
+	cert, err := tlscert.LoadOrCreate(tlsCertDir, ml.ServerName)
+	if err != nil {
+		return nil, err
+	}
+	fp, err := tlscert.LeafFingerprint(&cert)
+	if err != nil {
+		return nil, err
+	}
+	return &mimic.TLSMimic{
+		Token:     cfg.AuthToken,
+		Filter:    filter,
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+		CertFP:    fp,
+		DecoyAddr: ml.Decoy, // "" -> built-in web page
+	}, nil
 }
 
 // decoyBannerMirror holds the real sshd banner and keeps it up to date. SSH binds

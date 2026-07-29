@@ -25,6 +25,8 @@ func clientMimicFor(ep config.Endpoint, token string) mimic.ClientMimic {
 	switch ep.Mimic {
 	case "tls":
 		return &mimic.TLSClient{Token: token, ServerName: ep.ServerName}
+	case "smtp", "imap":
+		return &mimic.StartTLSClient{Proto: ep.Mimic, TLS: &mimic.TLSClient{Token: token, ServerName: ep.ServerName}}
 	default: // "ssh"
 		return &mimic.SSHClient{Token: token}
 	}
