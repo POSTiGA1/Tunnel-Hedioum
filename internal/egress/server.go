@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/securestream"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tlscert"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
 
@@ -25,16 +27,17 @@ const (
 	egressDual = "dual"
 )
 
-// Egress policy, set once at StartForeignDaemon. Defaults are IPv4-only egress
-// (so a misconfiguration can never leak the server's IPv6 identity) and the
-// conventional decoy sshd port 2022.
+const tlsCertDir = "/etc/hedioum/tls"
+
+// Egress dial policy, set once at StartForeignDaemon. Default is IPv4-only egress
+// so a misconfiguration can never leak the server's IPv6 identity.
 var (
 	egressMode   = egressIPv4
 	egressBindIP net.IP // optional source IP to bind
-	decoyAddr    = "127.0.0.1:2022"
 )
 
-// StartForeignDaemon boots up the egress networking processes on the foreign server.
+// StartForeignDaemon boots the egress: one camouflage listener per configured
+// mimic (SSH, TLS, ...), all feeding the same tunnel core.
 func StartForeignDaemon(cfg *config.AppConfig) {
 	// Apply the egress dial policy (how we reach the open internet).
 	if cfg.EgressIPMode != "" {
@@ -43,50 +46,72 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 	if cfg.EgressBindIP != "" {
 		egressBindIP = net.ParseIP(cfg.EgressBindIP)
 	}
-	if cfg.DecoyPort != 0 {
-		decoyAddr = fmt.Sprintf("127.0.0.1:%d", cfg.DecoyPort)
-	}
+	slog.Info("egress starting", "egress_mode", egressMode, "mimics", len(cfg.Mimics))
 
-	// Dynamically bind to the configured port or fallback to 22
-	listenPort := 22
-	if cfg.ForeignListenPort != 0 {
-		listenPort = cfg.ForeignListenPort
-	}
-	// Dual-stack listen (":port") so an Iran hub can reach us over IPv4 or IPv6.
-	listenAddr := fmt.Sprintf(":%d", listenPort)
+	// One replay filter is shared across listeners (SSH salts and TLS nonces are
+	// distinct high-entropy values).
+	replayFilter := securestream.NewReplayFilter(0)
 
-	listener, err := net.Listen("tcp", listenAddr)
+	for _, ml := range cfg.Mimics {
+		go startMimicListener(cfg, ml, replayFilter)
+	}
+	select {} // block forever
+}
+
+// startMimicListener binds one port and serves it with the given mimic.
+func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) {
+	m, err := buildServerMimic(cfg, ml, filter)
 	if err != nil {
-		slog.Error("failed to bind egress daemon", "addr", listenAddr, "port", listenPort, "err", err)
+		slog.Error("failed to build mimic", "type", ml.Type, "err", err)
 		return
 	}
 
-	slog.Info("egress daemon listening", "addr", listenAddr, "egress_mode", egressMode)
-	slog.Info("decoy target set", "decoy", decoyAddr)
-
-	// Mirror the real sshd banner so a genuine SSH client (password or key) routed
-	// to the decoy still completes key exchange on the public port. Kept fresh so
-	// it survives boot races (sshd not up yet) and sshd upgrades.
-	banner := newDecoyBannerMirror(decoyAddr)
-
-	// Bounded, TTL'd replay protection for the authentication handshake.
-	replayFilter := securestream.NewReplayFilter(0)
-
-	// The camouflage layer for this listener (SSH for now; TLS/others added later).
-	var serverMimic mimic.ServerMimic = &mimic.SSHMimic{
-		Token:     cfg.AuthToken,
-		Filter:    replayFilter,
-		DecoyAddr: decoyAddr,
-		Banner:    banner.get,
+	// Dual-stack listen (":port") so an Iran hub can reach us over IPv4 or IPv6.
+	listenAddr := fmt.Sprintf(":%d", ml.Port)
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		slog.Error("failed to bind mimic listener", "type", ml.Type, "addr", listenAddr, "err", err)
+		return
 	}
+	slog.Info("mimic listener active", "type", ml.Type, "addr", listenAddr)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			continue
 		}
+		go handleIncomingConnection(conn, m)
+	}
+}
 
-		go handleIncomingConnection(conn, serverMimic)
+// buildServerMimic constructs the server-side camouflage for a listener.
+func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) (mimic.ServerMimic, error) {
+	switch ml.Type {
+	case "tls":
+		cert, err := tlscert.LoadOrCreate(tlsCertDir, ml.ServerName)
+		if err != nil {
+			return nil, err
+		}
+		fp, err := tlscert.LeafFingerprint(&cert)
+		if err != nil {
+			return nil, err
+		}
+		return &mimic.TLSMimic{
+			Token:     cfg.AuthToken,
+			Filter:    filter,
+			TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+			CertFP:    fp,
+			DecoyAddr: ml.Decoy, // "" -> built-in web page
+		}, nil
+	default: // "ssh"
+		decoy := ml.Decoy
+		if decoy == "" {
+			decoy = fmt.Sprintf("127.0.0.1:%d", cfg.DecoyPort)
+		}
+		// Mirror the real sshd banner so a genuine SSH client routed to the decoy
+		// completes key exchange; kept fresh across boot races / sshd upgrades.
+		banner := newDecoyBannerMirror(decoy)
+		return &mimic.SSHMimic{Token: cfg.AuthToken, Filter: filter, DecoyAddr: decoy, Banner: banner.get}, nil
 	}
 }
 

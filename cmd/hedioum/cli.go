@@ -31,6 +31,8 @@ func runSubcommand(name string, args []string) {
 		cmdUninstall(args)
 	case "update":
 		cmdUpdate(args)
+	case "speedtest":
+		cmdSpeedtest(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -59,6 +61,7 @@ Usage:
       --alias NAME  --target HOST:PORT  --socks-port N  --token HEX
       [--min N --max N --bw N --jitter N]
   hedioum-tunnel remove-node --alias NAME
+  hedioum-tunnel speedtest [--node NAME] [--mimic ssh|tls] [--seconds N] [--dir down|up|both]
 
 Flags for the default mode:
   --reset            Wipe the config and re-run the setup wizard

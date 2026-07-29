@@ -4,14 +4,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand"
 	"net"
-	"strconv"
 	"time"
 
-	"github.com/hashicorp/yamux"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
-	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/pool"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
@@ -22,77 +18,18 @@ func StartIranHub(cfg *config.AppConfig) {
 	hubManager := pool.NewHubManager()
 
 	for _, node := range cfg.ForeignNodes {
-		// 1. Configure optimized Yamux settings for high-latency, high-throughput WAN links
-		yamuxCfg := yamux.DefaultConfig()
+		nodeCopy := node // local copy for the closure
 
-		// Disable built-in predictable keep-alive to avoid DPI time-based pattern recognition.
-		// We will implement a custom, randomized heartbeat.
-		yamuxCfg.EnableKeepAlive = false
+		// The dialer spreads new physical pipes across this node's endpoints with a
+		// fluctuating per-server mimic distribution (see dial.go).
+		dialer := newEndpointDialer(nodeCopy)
+		hubManager.RegisterNode(nodeCopy, dialer.dial)
 
-		// Increase window size to 4MB to prevent TCP window bottlenecks on long-distance links
-		yamuxCfg.MaxStreamWindowSize = 4 * 1024 * 1024
-		// Allow larger buffer to accommodate high-speed bursts (e.g., streaming video chunks)
-		yamuxCfg.StreamCloseTimeout = 3 * time.Minute
-
-		nodeCopy := node // Create a local copy for the closure
-
-		// The camouflage the hub speaks to this node (SSH for now).
-		var clientMimic mimic.ClientMimic = &mimic.SSHClient{Token: nodeCopy.AuthToken}
-
-		// 2. Define the dialing and physical handshake procedure for this foreign node
-		dialerFunc := func() (*yamux.Session, error) {
-			// JoinHostPort handles IPv6 literals correctly (brackets), unlike "%s:%d".
-			targetAddr := net.JoinHostPort(nodeCopy.TargetIP, strconv.Itoa(nodeCopy.TargetPort))
-
-			// Dial the physical TCP connection
-			conn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
-			if err != nil {
-				return nil, err
-			}
-
-			// Run the camouflage handshake (SSH banner + authenticated ChaCha20-
-			// Poly1305). The token is the pre-shared key, never sent in the clear.
-			secureConn, err := clientMimic.Dial(conn)
-			if err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("mimic handshake failed: %w", err)
-			}
-
-			// Wrap the authenticated, encrypted connection in a Yamux client session
-			session, err := yamux.Client(secureConn, yamuxCfg)
-			if err != nil {
-				secureConn.Close()
-				return nil, err
-			}
-
-			// 4. Launch a custom, randomized Keep-Alive heartbeat to evade DPI periodicity checks
-			go func(s *yamux.Session) {
-				for {
-					if s.IsClosed() {
-						return // Stop pinging if the physical session dies
-					}
-					// Randomize interval between 20 and 45 seconds
-					randomDelay := time.Duration(rand.Intn(26)+20) * time.Second
-					time.Sleep(randomDelay)
-
-					// Send a silent Yamux ping over the physical channel
-					if _, err := s.Ping(); err != nil {
-						return
-					}
-				}
-			}(session)
-
-			return session, nil
-		}
-
-		// 5. Register the auto-scaling pool for this specific node
-		hubManager.RegisterNode(nodeCopy, dialerFunc)
-
-		// 6. Start the local SOCKS5 listener, strictly bound to localhost
+		// Local SOCKS5 listener, strictly bound to localhost, for X-UI/Xray.
 		go startLocalSocksListener(nodeCopy, hubManager)
 	}
 
-	// Block the main thread to keep daemons running indefinitely
+	// Block the main thread to keep daemons running indefinitely.
 	select {}
 }
 

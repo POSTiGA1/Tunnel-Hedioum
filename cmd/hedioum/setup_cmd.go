@@ -6,28 +6,63 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
+	"strings"
 
 	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 )
 
+// expandMimics turns "all" or a comma list into an ordered, validated mimic list.
+func expandMimics(spec string) ([]string, error) {
+	if spec == "all" {
+		return []string{"ssh", "tls"}, nil
+	}
+	var out []string
+	for _, p := range strings.Split(spec, ",") {
+		p = strings.TrimSpace(p)
+		switch p {
+		case "ssh", "tls":
+			out = append(out, p)
+		case "":
+		default:
+			return nil, fmt.Errorf("unknown mimic %q (want ssh|tls|all)", p)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no mimics selected")
+	}
+	return out, nil
+}
+
+// speedProfile resolves min/max/bw/jitter defaults for a named throughput profile.
+func speedProfile(name string) (min, max, bw, jitter int) {
+	switch name {
+	case "high-speed":
+		return 15, 40, 60, 15 // ~ up to ~40*60 Mbps aggregate
+	default: // "balanced" / ""
+		return 10, 20, 8, 2
+	}
+}
+
 // cmdSetupForeign writes the foreign (egress) configuration non-interactively.
 func cmdSetupForeign(args []string) {
 	fs := flag.NewFlagSet("setup-foreign", flag.ExitOnError)
-	listenPort := fs.Int("listen-port", 22, "public listen port")
+	sshPort := fs.Int("listen-port", 22, "SSH mimic public port")
 	decoyPort := fs.Int("decoy-port", 2022, "local decoy sshd port")
+	tlsPort := fs.Int("tls-port", 443, "TLS mimic public port")
+	tlsServerName := fs.String("tls-servername", "", "TLS SNI/CN (optional)")
+	mimics := fs.String("mimics", "ssh", "camouflage: ssh|tls|all or a comma list")
 	egressMode := fs.String("egress-mode", "ipv4", "egress family: ipv4|ipv6|dual")
 	bindIP := fs.String("egress-bind-ip", "", "optional egress source IP")
 	moveSSH := fs.Bool("move-ssh", false, "relocate OpenSSH to --decoy-port")
 	token := fs.String("token", "", "auth token (generated if empty)")
 	_ = fs.Parse(args)
 
-	if err := validPort(*listenPort); err != nil {
-		fail("--listen-port: %v", err)
-	}
-	if err := validPort(*decoyPort); err != nil {
-		fail("--decoy-port: %v", err)
+	for label, p := range map[string]int{"listen-port": *sshPort, "decoy-port": *decoyPort, "tls-port": *tlsPort} {
+		if err := validPort(p); err != nil {
+			fail("--%s: %v", label, err)
+		}
 	}
 	switch *egressMode {
 	case "ipv4", "ipv6", "dual":
@@ -39,6 +74,10 @@ func cmdSetupForeign(args []string) {
 			fail("--egress-bind-ip: %v", err)
 		}
 	}
+	types, err := expandMimics(*mimics)
+	if err != nil {
+		fail("--mimics: %v", err)
+	}
 	tok := *token
 	if tok == "" {
 		tok = sysutil.GenerateSecureToken()
@@ -46,8 +85,17 @@ func cmdSetupForeign(args []string) {
 		fail("--token: %v", err)
 	}
 
-	if *listenPort != 22 {
-		color.Yellow("[!] Listen port %d: the SSH mimic is most convincing on 22; a non-22 port may be easier to fingerprint until port-appropriate mimics land.", *listenPort)
+	var mimicList []config.MimicListener
+	for _, ty := range types {
+		switch ty {
+		case "ssh":
+			if *sshPort != 22 {
+				color.Yellow("[!] SSH mimic on port %d: most convincing on 22.", *sshPort)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "ssh", Port: *sshPort, Decoy: fmt.Sprintf("127.0.0.1:%d", *decoyPort)})
+		case "tls":
+			mimicList = append(mimicList, config.MimicListener{Type: "tls", Port: *tlsPort, ServerName: *tlsServerName})
+		}
 	}
 	if *moveSSH {
 		if err := sysutil.ChangeSSHPort(strconv.Itoa(*decoyPort)); err != nil {
@@ -59,40 +107,44 @@ func cmdSetupForeign(args []string) {
 
 	cfg := &config.AppConfig{
 		Role:              "foreign",
-		ForeignListenPort: *listenPort,
+		ForeignListenPort: *sshPort,
 		DecoyPort:         *decoyPort,
 		EgressIPMode:      *egressMode,
 		EgressBindIP:      *bindIP,
 		AuthToken:         tok,
+		Mimics:            mimicList,
 	}
 	if err := config.SaveConfig(cfg); err != nil {
 		fail("failed to save config: %v", err)
 	}
-	color.Green("[✓] Foreign config written (listen %d, decoy %d, egress %s).", *listenPort, *decoyPort, *egressMode)
+	color.Green("[✓] Foreign config written (mimics: %s, egress %s).", strings.Join(types, ","), *egressMode)
 	fmt.Printf("Auth Token: %s\n", tok)
 }
 
-// cmdSetupIran writes the Iran (hub) config with its first node (same flags as add-node).
+// cmdSetupIran writes the Iran (hub) config with its first node.
 func cmdSetupIran(args []string) { cmdAddNode(args) }
 
-// cmdAddNode appends a foreign node to the Iran hub config (creating it if absent).
+// cmdAddNode appends a foreign node (one SOCKS port + endpoints) to the hub config.
 func cmdAddNode(args []string) {
 	fs := flag.NewFlagSet("add-node", flag.ExitOnError)
 	alias := fs.String("alias", "", "node alias")
-	target := fs.String("target", "", "foreign egress HOST:PORT")
+	targetIP := fs.String("target-ip", "", "foreign IP (with --mimics)")
+	target := fs.String("target", "", "single foreign HOST:PORT (legacy, SSH)")
+	mimics := fs.String("mimics", "", "endpoints: ssh|tls|all (needs --target-ip)")
+	sshPort := fs.Int("ssh-port", 22, "foreign SSH mimic port")
+	tlsPort := fs.Int("tls-port", 443, "foreign TLS mimic port")
+	tlsServerName := fs.String("tls-servername", "", "TLS SNI")
 	socksPort := fs.Int("socks-port", 0, "local SOCKS5 bind port")
 	token := fs.String("token", "", "auth token from the foreign node")
-	min := fs.Int("min", 10, "min warm-up connections")
-	max := fs.Int("max", 20, "max connections")
-	bw := fs.Int("bw", 8, "per-connection bandwidth cap (Mbps)")
-	jitter := fs.Int("jitter", 2, "bandwidth jitter (Mbps)")
+	profile := fs.String("profile", "balanced", "throughput profile: balanced|high-speed")
+	min := fs.Int("min", 0, "min warm-up connections (0 = profile)")
+	max := fs.Int("max", 0, "max connections (0 = profile)")
+	bw := fs.Int("bw", 0, "per-connection Mbps cap (0 = profile)")
+	jitter := fs.Int("jitter", -1, "bandwidth jitter Mbps (-1 = profile)")
 	_ = fs.Parse(args)
 
 	if *alias == "" {
 		fail("--alias is required")
-	}
-	if err := validTarget(*target); err != nil {
-		fail("--target: %v", err)
 	}
 	if err := validPort(*socksPort); err != nil {
 		fail("--socks-port: %v", err)
@@ -100,8 +152,52 @@ func cmdAddNode(args []string) {
 	if err := validToken(*token); err != nil {
 		fail("--token: %v", err)
 	}
-	host, portStr, _ := net.SplitHostPort(*target)
-	tport, _ := strconv.Atoi(portStr)
+
+	var endpoints []config.Endpoint
+	switch {
+	case *mimics != "":
+		if *targetIP == "" {
+			fail("--mimics requires --target-ip")
+		}
+		types, err := expandMimics(*mimics)
+		if err != nil {
+			fail("--mimics: %v", err)
+		}
+		for label, p := range map[string]int{"ssh-port": *sshPort, "tls-port": *tlsPort} {
+			if err := validPort(p); err != nil {
+				fail("--%s: %v", label, err)
+			}
+		}
+		for _, ty := range types {
+			switch ty {
+			case "ssh":
+				endpoints = append(endpoints, config.Endpoint{Target: net.JoinHostPort(*targetIP, strconv.Itoa(*sshPort)), Mimic: "ssh"})
+			case "tls":
+				endpoints = append(endpoints, config.Endpoint{Target: net.JoinHostPort(*targetIP, strconv.Itoa(*tlsPort)), Mimic: "tls", ServerName: *tlsServerName})
+			}
+		}
+	case *target != "":
+		if err := validTarget(*target); err != nil {
+			fail("--target: %v", err)
+		}
+		endpoints = []config.Endpoint{{Target: *target, Mimic: "ssh"}}
+	default:
+		fail("provide --target-ip --mimics ... or --target HOST:PORT")
+	}
+
+	pMin, pMax, pBw, pJit := speedProfile(*profile)
+	if *min > 0 {
+		pMin = *min
+	}
+	if *max > 0 {
+		pMax = *max
+	}
+	if *bw > 0 {
+		pBw = *bw
+	}
+	if *jitter >= 0 {
+		pJit = *jitter
+	}
 
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -116,19 +212,22 @@ func cmdAddNode(args []string) {
 
 	cfg.UpdateForeignNode(config.ForeignNode{
 		Alias:               *alias,
-		TargetIP:            host,
-		TargetPort:          tport,
 		LocalSocksPort:      *socksPort,
 		AuthToken:           *token,
-		MinConnections:      *min,
-		MaxConnections:      *max,
-		BandwidthLimitMbps:  *bw,
-		BandwidthJitterMbps: *jitter,
+		Endpoints:           endpoints,
+		MinConnections:      pMin,
+		MaxConnections:      pMax,
+		BandwidthLimitMbps:  pBw,
+		BandwidthJitterMbps: pJit,
 	})
 	if err := config.SaveConfig(cfg); err != nil {
 		fail("failed to save config: %v", err)
 	}
-	color.Green("[✓] Node %q added (target %s, socks %d).", *alias, *target, *socksPort)
+	labels := make([]string, len(endpoints))
+	for i, e := range endpoints {
+		labels[i] = e.Mimic + "@" + e.Target
+	}
+	color.Green("[✓] Node %q added (socks %d, endpoints: %s).", *alias, *socksPort, strings.Join(labels, ", "))
 	restartDaemon()
 }
 
