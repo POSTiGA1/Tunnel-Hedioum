@@ -72,13 +72,21 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 	// Bounded, TTL'd replay protection for the authentication handshake.
 	replayFilter := securestream.NewReplayFilter(0)
 
+	// The camouflage layer for this listener (SSH for now; TLS/others added later).
+	var serverMimic mimic.ServerMimic = &mimic.SSHMimic{
+		Token:     cfg.AuthToken,
+		Filter:    replayFilter,
+		DecoyAddr: decoyAddr,
+		Banner:    banner.get,
+	}
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			continue
 		}
 
-		go handleIncomingConnection(conn, cfg.AuthToken, replayFilter, banner.get())
+		go handleIncomingConnection(conn, serverMimic)
 	}
 }
 
@@ -130,22 +138,22 @@ func (m *decoyBannerMirror) refreshLoop(addr string) {
 	}
 }
 
-// handleIncomingConnection authenticates the peer over the encrypted handshake,
-// diverts unauthorized probes to the decoy, or establishes the Yamux tunnel.
-func handleIncomingConnection(conn net.Conn, expectedToken string, filter *securestream.ReplayFilter, serverBanner string) {
+// handleIncomingConnection runs the mimic handshake, diverts unauthorized probes
+// to the mimic's decoy, or establishes the Yamux tunnel.
+func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic) {
 	clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 
-	// 1. Exchange banners + authenticate over the encrypted transport. On failure
-	// we receive a ReplayConn carrying the exact bytes the peer sent.
-	secureConn, replayConn, err := mimic.PerformServerHandshake(conn, expectedToken, filter, serverBanner)
+	// 1. Camouflage + authenticate. On failure we receive a replay conn carrying
+	// the exact bytes the peer sent, to forward to the decoy backend.
+	secureConn, replayConn, err := m.Accept(conn)
 	if err != nil {
-		// A wrong PSK, a replayed handshake, or a probe that is not speaking our
-		// protocol. Route it to the real OpenSSH decoy so the server is
-		// indistinguishable from an ordinary SSH host (no ban, uniform behavior).
+		// A wrong credential, a replayed handshake, or a probe not speaking our
+		// protocol. Route it to the decoy so the port looks like a real service
+		// (no ban, uniform behavior).
 		if errors.Is(err, securestream.ErrAuth) {
-			slog.Debug("unauthorized/replayed probe; routing to decoy", "client_ip", clientIP)
+			slog.Debug("unauthorized/replayed probe; routing to decoy", "client_ip", clientIP, "mimic", m.Name())
 		}
-		go proxyToDecoy(replayConn)
+		go m.ProxyDecoy(replayConn)
 		return
 	}
 
@@ -161,42 +169,10 @@ func handleIncomingConnection(conn net.Conn, expectedToken string, filter *secur
 		return
 	}
 
-	slog.Info("authentic hub connection established", "client_ip", clientIP)
+	slog.Info("authentic hub connection established", "client_ip", clientIP, "mimic", m.Name())
 
 	// 3. Accept logical streams from the Hub and route them to the open internet
 	go handleYamuxSession(session)
-}
-
-// proxyToDecoy silently bridges unauthorized connections to the local OpenSSH daemon.
-func proxyToDecoy(clientConn net.Conn) {
-	defer clientConn.Close()
-
-	// Dial the real SSH daemon we moved to port 2022
-	decoyConn, err := net.DialTimeout("tcp", decoyAddr, 5*time.Second)
-	if err != nil {
-		return
-	}
-	defer decoyConn.Close()
-
-	// --- DECOY BANNER CONSUMPTION ---
-	// The client has already received a fake SSH banner from our mimic handshake.
-	// The real SSH daemon (Decoy) will also send its own banner as soon as we connect.
-	// If we pipe immediately, the client gets TWO banners and crashes with "Bad packet length".
-	// Therefore, we must silently consume and discard the decoy's banner first.
-	_ = mimic.ConsumeDecoyServerBanner(decoyConn)
-
-	// Pipe traffic bidirectionally so the scanner interacts with real SSH
-	errChan := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(decoyConn, clientConn)
-		errChan <- err
-	}()
-	go func() {
-		_, err := io.Copy(clientConn, decoyConn)
-		errChan <- err
-	}()
-
-	<-errChan
 }
 
 // handleYamuxSession accepts individual user streams multiplexed over the single physical link.

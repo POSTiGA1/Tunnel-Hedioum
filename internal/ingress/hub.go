@@ -36,6 +36,9 @@ func StartIranHub(cfg *config.AppConfig) {
 
 		nodeCopy := node // Create a local copy for the closure
 
+		// The camouflage the hub speaks to this node (SSH for now).
+		var clientMimic mimic.ClientMimic = &mimic.SSHClient{Token: nodeCopy.AuthToken}
+
 		// 2. Define the dialing and physical handshake procedure for this foreign node
 		dialerFunc := func() (*yamux.Session, error) {
 			// JoinHostPort handles IPv6 literals correctly (brackets), unlike "%s:%d".
@@ -47,14 +50,12 @@ func StartIranHub(cfg *config.AppConfig) {
 				return nil, err
 			}
 
-			// Exchange SSH banners for camouflage, then upgrade to the authenticated
-			// ChaCha20-Poly1305 transport. The token is the pre-shared key and is
-			// never sent in the clear; it also keys the AEAD, so a passive observer
-			// sees only random salts followed by ciphertext.
-			secureConn, err := mimic.PerformClientHandshake(conn, nodeCopy.AuthToken)
+			// Run the camouflage handshake (SSH banner + authenticated ChaCha20-
+			// Poly1305). The token is the pre-shared key, never sent in the clear.
+			secureConn, err := clientMimic.Dial(conn)
 			if err != nil {
 				conn.Close()
-				return nil, fmt.Errorf("secure handshake failed: %w", err)
+				return nil, fmt.Errorf("mimic handshake failed: %w", err)
 			}
 
 			// Wrap the authenticated, encrypted connection in a Yamux client session
