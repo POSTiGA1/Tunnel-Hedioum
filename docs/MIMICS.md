@@ -21,12 +21,20 @@ service.
 
 ## The mimics
 
-| Mimic  | Default port | On the wire looks like        | Decoy for unauthorized peers        |
-|--------|--------------|-------------------------------|-------------------------------------|
-| `ssh`  | 22           | An OpenSSH server             | The host's **real `sshd`** (banner mirrored byte-for-byte) |
-| `tls`  | 443          | An HTTPS web server           | A built-in `nginx`-style **web page** (or a real backend)  |
-| `smtp` | 587          | A mail server doing STARTTLS  | Same web/TLS decoy after the STARTTLS upgrade              |
-| `imap` | 143          | A mail server doing STARTTLS  | Same web/TLS decoy after the STARTTLS upgrade              |
+| Mimic   | Default port | On the wire looks like             | Decoy for unauthorized peers        |
+|---------|--------------|------------------------------------|-------------------------------------|
+| `ssh`   | 22           | An OpenSSH server                  | The host's **real `sshd`** (banner mirrored byte-for-byte) |
+| `tls`   | 443          | An HTTPS web server                | A built-in `nginx`-style **web page** (or a real backend)  |
+| `smtp`  | 587          | A mail server doing **STARTTLS**   | Web/TLS decoy after the STARTTLS upgrade              |
+| `imap`  | 143          | A mail server doing **STARTTLS**   | Web/TLS decoy after the STARTTLS upgrade              |
+| `smtps` | 465          | **Implicit-TLS** SMTP submission   | Built-in web page (same as `tls`)   |
+| `imaps` | 993          | **Implicit-TLS** IMAP (IMAPS)      | Built-in web page (same as `tls`)   |
+
+**STARTTLS vs implicit TLS.** `smtp`/`imap` (587/143) start in *plaintext* and
+upgrade to TLS via a `STARTTLS` command — a mail client negotiating STARTTLS is
+what a probe sees. `smtps`/`imaps` (465/993) are **TLS from the first byte**
+(no plaintext prologue) — identical to the `tls` mimic, just on the conventional
+mail-over-TLS ports. Pick whichever your network treats as least suspicious.
 
 ### SSH mimic
 Presents a real `SSH-2.0-...` banner mirrored **byte-for-byte** from the host's
@@ -119,3 +127,65 @@ hedioum-tunnel speedtest --node de1 --mimic tls --seconds 20  # test a specific 
 
 BBR + `fq` and 16 MB Yamux windows (both enabled automatically) are what let a
 single pipe approach line rate on high-latency links.
+
+---
+
+## Observing which mimics are actually working
+
+Because the pool spreads pipes across mimics with a fluctuating distribution, it
+helps to see which are connecting and which are blocked on the current path.
+
+**Probe every endpoint of a node** (dials + pings each mimic end-to-end, reports
+latency or the failure):
+
+```bash
+hedioum-tunnel probe --node de1
+# ✓ ssh    203.0.113.9:22    OK  (61 ms)
+# ✓ tls    203.0.113.9:443   OK  (63 ms)
+# ✗ smtp   203.0.113.9:587   FAIL: dial tcp ...:587: i/o timeout
+```
+
+**Watch live pipe establishment** — the hub logs each new pipe with its mimic:
+
+```bash
+journalctl -u hedioum.service -f | grep "pipe established"
+# INFO pipe established node=de1 mimic=tls target=203.0.113.9:443
+```
+
+On the foreign side, `journalctl -u hedioum | grep "authentic hub connection"`
+shows the mimic mix from the egress's point of view.
+
+> Which mimics work is a property of the **network path**, not the tool: a port
+> may be blocked upstream, or a DPI box may be hostile to a specific protocol.
+> `tls`/`imaps` on 443/993 are usually the safest; `smtp`/`imap` on 587/143 are
+> more often blocked or scrutinised. Use `probe` to find out for a given network.
+
+---
+
+## DNS: no leak by design
+
+DNS resolution happens on the **foreign** node, never on the Iran box — provided
+the client sends a **domain** (not a pre-resolved IP) into SOCKS:
+
+1. The SOCKS5 ingress reads the destination and, for a domain target, forwards the
+   **domain string unchanged** — it never calls a resolver locally.
+2. The domain travels through the tunnel to the egress, which resolves it there
+   (with the same SSRF vetting applied to the result).
+3. UDP DNS queries (port 53) ride the UDP-associate path and are likewise
+   forwarded to the resolver from the foreign side.
+
+So configure Xray/X-UI for **remote DNS** (e.g. `"domainStrategy": "AsIs"` and a
+DNS server reached *through* the proxy). If Xray resolves names locally before
+handing an IP to SOCKS, that lookup leaves the Iran box directly — that is a
+client-side leak the tunnel cannot prevent.
+
+**Verify no leak** from the hub:
+
+```bash
+# remote DNS (domain sent to us) — no local lookup:
+curl --socks5-hostname 127.0.0.1:40001 https://example.com
+# contrast with local resolution (leaks the query on the hub):
+curl --socks5           127.0.0.1:40001 https://example.com
+# and confirm nothing queries 53 outside the tunnel:
+sudo tcpdump -ni any port 53
+```

@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"fmt"
+	"log/slog"
 	mrand "math/rand/v2"
 	"net"
 	"time"
@@ -23,7 +24,8 @@ func hubYamuxConfig() *yamux.Config {
 // clientMimicFor builds the client camouflage for an endpoint's mimic type.
 func clientMimicFor(ep config.Endpoint, token string) mimic.ClientMimic {
 	switch ep.Mimic {
-	case "tls":
+	case "tls", "smtps", "imaps":
+		// Implicit TLS (smtps/imaps share the plain TLS mimic, different port).
 		return &mimic.TLSClient{Token: token, ServerName: ep.ServerName}
 	case "smtp", "imap":
 		return &mimic.StartTLSClient{Proto: ep.Mimic, TLS: &mimic.TLSClient{Token: token, ServerName: ep.ServerName}}
@@ -50,6 +52,20 @@ func DialEndpoint(ep config.Endpoint, token string, cfg *yamux.Config) (*yamux.S
 		return nil, err
 	}
 	return session, nil
+}
+
+// ProbeEndpoint dials one endpoint end-to-end (TCP + mimic handshake + yamux) and
+// pings it through the tunnel to confirm the egress is actually alive, returning
+// the round-trip latency. It tears the probe connection down before returning. The
+// `probe` command uses it to report which mimics on a node are reachable and which
+// are blocked (wrong port, censored protocol, dead egress).
+func ProbeEndpoint(ep config.Endpoint, token string) (time.Duration, error) {
+	sess, err := DialEndpoint(ep, token, hubYamuxConfig())
+	if err != nil {
+		return 0, err
+	}
+	defer sess.Close()
+	return sess.Ping() // real round-trip through the mux -> proves the pipe works
 }
 
 // endpointDialer spreads new physical pipes across a node's endpoints with random
@@ -89,10 +105,13 @@ func (d *endpointDialer) pick() config.Endpoint {
 }
 
 func (d *endpointDialer) dial() (*yamux.Session, error) {
-	session, err := DialEndpoint(d.pick(), d.node.AuthToken, d.cfg)
+	ep := d.pick()
+	session, err := DialEndpoint(ep, d.node.AuthToken, d.cfg)
 	if err != nil {
+		slog.Warn("pipe dial failed", "node", d.node.Alias, "mimic", ep.Mimic, "target", ep.Target, "err", err)
 		return nil, err
 	}
+	slog.Info("pipe established", "node", d.node.Alias, "mimic", ep.Mimic, "target", ep.Target)
 	go keepAlive(session)
 	return session, nil
 }

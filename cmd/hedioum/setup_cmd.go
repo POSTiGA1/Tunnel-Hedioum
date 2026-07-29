@@ -22,11 +22,11 @@ func expandMimics(spec string) ([]string, error) {
 	for _, p := range strings.Split(spec, ",") {
 		p = strings.TrimSpace(p)
 		switch p {
-		case "ssh", "tls", "smtp", "imap":
+		case "ssh", "tls", "smtp", "imap", "smtps", "imaps":
 			out = append(out, p)
 		case "":
 		default:
-			return nil, fmt.Errorf("unknown mimic %q (want ssh|tls|smtp|imap|all)", p)
+			return nil, fmt.Errorf("unknown mimic %q (want ssh|tls|smtp|imap|smtps|imaps|all)", p)
 		}
 	}
 	if len(out) == 0 {
@@ -53,15 +53,17 @@ func cmdSetupForeign(args []string) {
 	tlsPort := fs.Int("tls-port", 443, "TLS mimic public port")
 	smtpPort := fs.Int("smtp-port", 587, "SMTP (STARTTLS) mimic public port")
 	imapPort := fs.Int("imap-port", 143, "IMAP (STARTTLS) mimic public port")
+	smtpsPort := fs.Int("smtps-port", 465, "SMTPS (implicit TLS) mimic public port")
+	imapsPort := fs.Int("imaps-port", 993, "IMAPS (implicit TLS) mimic public port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI/CN (optional)")
-	mimics := fs.String("mimics", "ssh", "camouflage: ssh|tls|smtp|imap|all or a comma list")
+	mimics := fs.String("mimics", "ssh", "camouflage: ssh|tls|smtp|imap|smtps|imaps|all or a comma list")
 	egressMode := fs.String("egress-mode", "ipv4", "egress family: ipv4|ipv6|dual")
 	bindIP := fs.String("egress-bind-ip", "", "optional egress source IP")
 	moveSSH := fs.Bool("move-ssh", false, "relocate OpenSSH to --decoy-port")
 	token := fs.String("token", "", "auth token (generated if empty)")
 	_ = fs.Parse(args)
 
-	for label, p := range map[string]int{"listen-port": *sshPort, "decoy-port": *decoyPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort} {
+	for label, p := range map[string]int{"listen-port": *sshPort, "decoy-port": *decoyPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort, "smtps-port": *smtpsPort, "imaps-port": *imapsPort} {
 		if err := validPort(p); err != nil {
 			fail("--%s: %v", label, err)
 		}
@@ -101,6 +103,10 @@ func cmdSetupForeign(args []string) {
 			mimicList = append(mimicList, config.MimicListener{Type: "smtp", Port: *smtpPort, ServerName: *tlsServerName})
 		case "imap":
 			mimicList = append(mimicList, config.MimicListener{Type: "imap", Port: *imapPort, ServerName: *tlsServerName})
+		case "smtps":
+			mimicList = append(mimicList, config.MimicListener{Type: "smtps", Port: *smtpsPort, ServerName: *tlsServerName})
+		case "imaps":
+			mimicList = append(mimicList, config.MimicListener{Type: "imaps", Port: *imapsPort, ServerName: *tlsServerName})
 		}
 	}
 	if *moveSSH {
@@ -141,6 +147,8 @@ func cmdAddNode(args []string) {
 	tlsPort := fs.Int("tls-port", 443, "foreign TLS mimic port")
 	smtpPort := fs.Int("smtp-port", 587, "foreign SMTP (STARTTLS) mimic port")
 	imapPort := fs.Int("imap-port", 143, "foreign IMAP (STARTTLS) mimic port")
+	smtpsPort := fs.Int("smtps-port", 465, "foreign SMTPS (implicit TLS) mimic port")
+	imapsPort := fs.Int("imaps-port", 993, "foreign IMAPS (implicit TLS) mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI")
 	socksPort := fs.Int("socks-port", 0, "local SOCKS5 bind port")
 	token := fs.String("token", "", "auth token from the foreign node")
@@ -171,22 +179,22 @@ func cmdAddNode(args []string) {
 		if err != nil {
 			fail("--mimics: %v", err)
 		}
-		for label, p := range map[string]int{"ssh-port": *sshPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort} {
+		for label, p := range map[string]int{"ssh-port": *sshPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort, "smtps-port": *smtpsPort, "imaps-port": *imapsPort} {
 			if err := validPort(p); err != nil {
 				fail("--%s: %v", label, err)
 			}
 		}
+		portFor := map[string]int{"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort, "smtps": *smtpsPort, "imaps": *imapsPort}
 		for _, ty := range types {
-			switch ty {
-			case "ssh":
-				endpoints = append(endpoints, config.Endpoint{Target: net.JoinHostPort(*targetIP, strconv.Itoa(*sshPort)), Mimic: "ssh"})
-			case "tls":
-				endpoints = append(endpoints, config.Endpoint{Target: net.JoinHostPort(*targetIP, strconv.Itoa(*tlsPort)), Mimic: "tls", ServerName: *tlsServerName})
-			case "smtp":
-				endpoints = append(endpoints, config.Endpoint{Target: net.JoinHostPort(*targetIP, strconv.Itoa(*smtpPort)), Mimic: "smtp", ServerName: *tlsServerName})
-			case "imap":
-				endpoints = append(endpoints, config.Endpoint{Target: net.JoinHostPort(*targetIP, strconv.Itoa(*imapPort)), Mimic: "imap", ServerName: *tlsServerName})
+			sni := ""
+			if ty != "ssh" {
+				sni = *tlsServerName
 			}
+			endpoints = append(endpoints, config.Endpoint{
+				Target:     net.JoinHostPort(*targetIP, strconv.Itoa(portFor[ty])),
+				Mimic:      ty,
+				ServerName: sni,
+			})
 		}
 	case *target != "":
 		if err := validTarget(*target); err != nil {

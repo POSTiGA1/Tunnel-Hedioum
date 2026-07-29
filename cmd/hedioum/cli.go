@@ -33,6 +33,8 @@ func runSubcommand(name string, args []string) {
 		cmdUpdate(args)
 	case "speedtest":
 		cmdSpeedtest(args)
+	case "probe":
+		cmdProbe(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -62,6 +64,7 @@ Usage:
       [--min N --max N --bw N --jitter N]
   hedioum-tunnel remove-node --alias NAME
   hedioum-tunnel speedtest [--node NAME] [--mimic ssh|tls] [--seconds N] [--dir down|up|both]
+  hedioum-tunnel probe     [--node NAME]    Test each endpoint (mimic) and report reachability
 
 Flags for the default mode:
   --reset            Wipe the config and re-run the setup wizard

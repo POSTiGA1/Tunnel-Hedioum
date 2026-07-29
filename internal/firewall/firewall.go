@@ -32,11 +32,25 @@ func EnsurePortOpen(port int) (string, error) {
 		_ = runQuiet("firewall-cmd", "--reload")
 		return "firewalld", errRuntime
 
-	case iptablesRestrictive():
+	case iptablesRestrictive("iptables") || iptablesRestrictive("ip6tables"):
 		// Covers legacy iptables and the iptables-nft shim (so most nftables
 		// setups are handled here too). The daemon re-runs this on every start,
 		// which also re-adds the rule after a reboot without needing persistence.
-		return "iptables", ensureIptablesAccept(port)
+		// Open both IPv4 (iptables) and IPv6 (ip6tables) so a dual-stack node's
+		// v6 listener is not silently blocked.
+		var failures []string
+		for _, bin := range []string{"iptables", "ip6tables"} {
+			if !iptablesRestrictive(bin) {
+				continue
+			}
+			if err := ensureIptablesAccept(bin, port); err != nil {
+				failures = append(failures, err.Error())
+			}
+		}
+		if len(failures) > 0 {
+			return "iptables", fmt.Errorf("%s", strings.Join(failures, "; "))
+		}
+		return "iptables", nil
 
 	default:
 		return "none", nil
@@ -63,14 +77,15 @@ func firewalldActive() bool {
 	return err == nil && strings.Contains(string(out), "running")
 }
 
-// iptablesRestrictive reports whether iptables is present and its INPUT chain
-// would drop unsolicited traffic (default policy DROP/REJECT), i.e. a new port
-// actually needs an explicit ACCEPT rule.
-func iptablesRestrictive() bool {
-	if !hasCmd("iptables") {
+// iptablesRestrictive reports whether the given backend (iptables for IPv4 or
+// ip6tables for IPv6) is present and its INPUT chain would drop unsolicited
+// traffic (default policy DROP/REJECT), i.e. a new port actually needs an
+// explicit ACCEPT rule.
+func iptablesRestrictive(bin string) bool {
+	if !hasCmd(bin) {
 		return false
 	}
-	out, err := exec.Command("iptables", "-S", "INPUT").CombinedOutput()
+	out, err := exec.Command(bin, "-S", "INPUT").CombinedOutput()
 	if err != nil {
 		return false
 	}
@@ -89,14 +104,15 @@ func parseInputRestrictive(rules string) bool {
 	return false
 }
 
-// ensureIptablesAccept adds an ACCEPT rule for tcp/<port> to INPUT unless one is
-// already present (checked with -C for idempotency).
-func ensureIptablesAccept(port int) error {
+// ensureIptablesAccept adds an ACCEPT rule for tcp/<port> to INPUT on the given
+// backend (iptables/ip6tables) unless one is already present (checked with -C for
+// idempotency).
+func ensureIptablesAccept(bin string, port int) error {
 	rule := []string{"INPUT", "-p", "tcp", "--dport", strconv.Itoa(port), "-j", "ACCEPT"}
-	if exec.Command("iptables", append([]string{"-C"}, rule...)...).Run() == nil {
+	if exec.Command(bin, append([]string{"-C"}, rule...)...).Run() == nil {
 		return nil // already allowed
 	}
-	return runQuiet("iptables", append([]string{"-I"}, rule...)...)
+	return runQuiet(bin, append([]string{"-I"}, rule...)...)
 }
 
 func hasCmd(name string) bool {

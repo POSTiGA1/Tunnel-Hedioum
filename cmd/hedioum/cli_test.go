@@ -51,6 +51,15 @@ func TestExpandMimics(t *testing.T) {
 	if got, _ := expandMimics("ssh,tls"); len(got) != 2 {
 		t.Fatalf("ssh,tls => %v", got)
 	}
+	// Implicit-TLS and STARTTLS mail mimics are all valid selectable types.
+	for _, m := range []string{"smtp", "imap", "smtps", "imaps"} {
+		if got, err := expandMimics(m); err != nil || len(got) != 1 || got[0] != m {
+			t.Fatalf("%s => %v, %v", m, got, err)
+		}
+	}
+	if got, _ := expandMimics("ssh,tls,smtp,imap,smtps,imaps"); len(got) != 6 {
+		t.Fatalf("all-explicit => %v", got)
+	}
 	if _, err := expandMimics("bogus"); err == nil {
 		t.Fatal("bogus mimic should error")
 	}

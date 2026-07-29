@@ -87,7 +87,9 @@ func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *
 // buildServerMimic constructs the server-side camouflage for a listener.
 func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) (mimic.ServerMimic, error) {
 	switch ml.Type {
-	case "tls":
+	case "tls", "smtps", "imaps":
+		// Implicit TLS: the wire is TLS from the first byte (like HTTPS/IMAPS/SMTPS).
+		// smtps/imaps are the same mimic as tls, just on their conventional ports.
 		return buildServerTLS(cfg, ml, filter)
 	case "smtp", "imap":
 		// STARTTLS: a plaintext mail-protocol prologue upgrades to the same TLS
