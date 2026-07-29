@@ -2,8 +2,10 @@ package main
 
 import (
 	"flag"
+	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/fatih/color"
@@ -11,18 +13,27 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/egress"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/firewall"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/ingress"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/logging"
 )
 
-// AppVersion defines the current build version for the self-updater
-// CRITICAL: This must match the GitHub Release Tag exactly (e.g., v0.5.0)
+// AppVersion defines the current build version for the self-updater.
+// CRITICAL: This must match the GitHub Release Tag exactly (e.g., v0.6.0)
 //
-// v0.5.0 adds UDP (SOCKS5 UDP ASSOCIATE over the tunnel) and opt-in IPv6. It
-// carries a BREAKING wire change (a 1-byte stream type now prefixes every logical
-// stream), on top of v0.4.0's authenticated ChaCha20-Poly1305 transport. Nodes
-// must be updated together: the Iran Hub and the Foreign Egress.
-const AppVersion = "v0.5.0"
+// v0.6.0 is a NON-breaking feature release (wire protocol unchanged from v0.5.0,
+// so v0.5 and v0.6 nodes interoperate): structured slog logging, non-interactive
+// CLI + self-install, configurable decoy/listen ports, buffered banner reads, and
+// a ghp.ci-free, signature-free-but-robust self-update.
+const AppVersion = "v0.6.0"
 
 func main() {
+	// Management subcommands (a non-flag first argument): install, setup-*, etc.
+	// The no-argument invocation (dashboard on a TTY / daemon under systemd) and
+	// the --reset/--open-firewall flags fall through to the logic below.
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		runSubcommand(os.Args[1], os.Args[2:])
+		return
+	}
+
 	resetCfg := flag.Bool("reset", false, "Wipe the current configuration database and restart the setup wizard")
 	openFW := flag.Bool("open-firewall", false, "Open the tunnel's listen port on the host firewall and exit (run privileged, e.g. from systemd ExecStartPre=+)")
 	flag.Parse()
@@ -63,13 +74,16 @@ func main() {
 		}
 		runInteractiveDashboard(cfg)
 	} else {
-		// Headless Daemon Execution (Systemd)
+		// Headless Daemon Execution (Systemd): structured logs to journald.
+		logging.Init(false) // level via HEDIOUM_LOG_LEVEL (debug|info|warn|error)
+		slog.Info("hedioum daemon starting", "version", AppVersion, "role", cfg.Role)
 		if cfg.Role == "foreign" {
 			egress.StartForeignDaemon(cfg)
 		} else if cfg.Role == "iran" {
 			ingress.StartIranHub(cfg)
 		} else {
 			// Fail securely if role is corrupted or undefined
+			slog.Error("undefined role in config; refusing to start", "role", cfg.Role)
 			os.Exit(1)
 		}
 	}

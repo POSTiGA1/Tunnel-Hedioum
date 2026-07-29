@@ -58,21 +58,36 @@ func setupForeignNode(cfg *config.AppConfig) {
 		Default: detectedIP,
 	}, &ip, survey.WithValidator(survey.Required))
 
+	// Public listen port (default 22). A non-22 port helps when outbound :22 is
+	// blocked, but weakens the SSH mimic.
+	var listenPortStr string
+	survey.AskOne(&survey.Input{Message: "Public listen port:", Default: "22"}, &listenPortStr)
+	listenPort := clampPort(listenPortStr, 22)
+	if listenPort != 22 {
+		color.Yellow("[!] Listen port %d: the SSH mimic is most convincing on 22; a non-22 port may be easier to fingerprint.", listenPort)
+	}
+
+	// Decoy sshd port (OpenSSH is relocated here).
+	var decoyPortStr string
+	survey.AskOne(&survey.Input{Message: "Decoy sshd port (OpenSSH is moved here):", Default: "2022"}, &decoyPortStr)
+	decoyPort := clampPort(decoyPortStr, 2022)
+
 	changeSSH := false
 	survey.AskOne(&survey.Confirm{
-		Message: "Move OpenSSH daemon to port 2022 to free Port 22 for DPI Decoy?",
+		Message: fmt.Sprintf("Move OpenSSH to port %d to free port %d for the tunnel/decoy?", decoyPort, listenPort),
 		Default: true,
 	}, &changeSSH)
 
 	if changeSSH {
-		if err := sysutil.ChangeSSHPort("2022"); err != nil {
+		if err := sysutil.ChangeSSHPort(strconv.Itoa(decoyPort)); err != nil {
 			color.Red("[x] OpenSSH port relocation failed: %v", err)
 		} else {
-			color.Green("[✓] OpenSSH shifted to 2022. Decoy port available.")
+			color.Green("[✓] OpenSSH shifted to %d. Decoy port available.", decoyPort)
 		}
 	}
 
-	cfg.ForeignListenPort = 22
+	cfg.ForeignListenPort = listenPort
+	cfg.DecoyPort = decoyPort
 	cfg.AuthToken = sysutil.GenerateSecureToken()
 
 	// IPv6 egress is opt-in (default IPv4-only to avoid leaking the v6 identity).
@@ -220,6 +235,15 @@ func validateHost(val interface{}) error {
 		return fmt.Errorf("not a valid IP or hostname")
 	}
 	return nil
+}
+
+// clampPort parses a port string, returning def if it is empty/invalid/out of range.
+func clampPort(s string, def int) int {
+	p := safeAtoi(s, def)
+	if validPort(p) != nil {
+		return def
+	}
+	return p
 }
 
 // safeAtoi parses strings to integers securely. It falls back to a provided default value

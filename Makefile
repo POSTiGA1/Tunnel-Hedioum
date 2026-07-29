@@ -5,11 +5,14 @@ BINARY_NAME=hedioum-tunnel
 MAIN_PATH=./cmd/hedioum
 BUILD_DIR=bin
 
+# Build metadata injected into the binary for `hedioum-tunnel version`.
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE   ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
 # Linker flags:
-# -s disables symbol table
-# -w disables DWARF generation
-# These reduce binary size by ~50% without affecting runtime functionality.
-LDFLAGS=-ldflags="-s -w"
+# -s disables symbol table, -w disables DWARF generation (~50% smaller binary).
+# -X injects build metadata (Version stays the AppVersion const used by self-update).
+LDFLAGS=-ldflags="-s -w -X main.Commit=$(COMMIT) -X main.Date=$(DATE)"
 
 .PHONY: all build-linux build-linux-arm64 clean fmt deps
 

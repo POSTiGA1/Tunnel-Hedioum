@@ -3,12 +3,12 @@ package ingress
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net"
 	"strconv"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/hashicorp/yamux"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
@@ -101,11 +101,11 @@ func startLocalSocksListener(node config.ForeignNode, hubManager *pool.HubManage
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", node.LocalSocksPort)
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		color.Red("[x] CRITICAL: Failed to bind SOCKS5 listener for [%s] on %s: %v", node.Alias, listenAddr, err)
+		slog.Error("failed to bind SOCKS5 listener", "node", node.Alias, "addr", listenAddr, "err", err)
 		return
 	}
 
-	color.Green("[✓] SOCKS5 Ingress active for [%s] on %s", node.Alias, listenAddr)
+	slog.Info("SOCKS5 ingress active", "node", node.Alias, "addr", listenAddr)
 
 	for {
 		clientConn, err := listener.Accept()
@@ -125,7 +125,8 @@ func handleClientTraffic(localConn net.Conn, nodeAlias string, hubManager *pool.
 	// 1. Negotiate SOCKS5 and read the request (command + destination).
 	cmd, dst, err := readSocksRequest(localConn)
 	if err != nil {
-		// Silently drop bad requests/scanners to conserve CPU and RAM
+		// Drop bad requests/scanners to conserve CPU and RAM.
+		slog.Debug("socks handshake failed", "node", nodeAlias, "err", err)
 		return
 	}
 
@@ -140,6 +141,7 @@ func handleClientTraffic(localConn net.Conn, nodeAlias string, hubManager *pool.
 	case cmdUDPAssociate:
 		handleUDPAssociate(localConn, nodeAlias, hubManager)
 	default:
+		slog.Debug("unsupported SOCKS command", "node", nodeAlias, "cmd", cmd)
 		_ = sendSocksReply(localConn, repCmdNotSupported, net.IPv4zero, 0)
 	}
 }
@@ -150,6 +152,7 @@ func handleTCPConnect(localConn net.Conn, targetDest, nodeAlias string, hubManag
 	stream, err := hubManager.GetStreamTCP(nodeAlias)
 	if err != nil {
 		// Pool temporarily exhausted or dead: drop; X-UI/Xray core retries.
+		slog.Debug("tcp pool unavailable, dropping connection", "node", nodeAlias, "err", err)
 		return
 	}
 	defer stream.Close()

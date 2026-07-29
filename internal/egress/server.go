@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strconv"
 	"sync/atomic"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/hashicorp/yamux"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	decoySSHPrt = "127.0.0.1:2022"
 	dialTimeout = 10 * time.Second
 
 	egressIPv4 = "ipv4"
@@ -26,11 +25,13 @@ const (
 	egressDual = "dual"
 )
 
-// Egress dial policy, set once at StartForeignDaemon. Default is IPv4-only so a
-// misconfiguration can never leak the server's IPv6 identity.
+// Egress policy, set once at StartForeignDaemon. Defaults are IPv4-only egress
+// (so a misconfiguration can never leak the server's IPv6 identity) and the
+// conventional decoy sshd port 2022.
 var (
 	egressMode   = egressIPv4
 	egressBindIP net.IP // optional source IP to bind
+	decoyAddr    = "127.0.0.1:2022"
 )
 
 // StartForeignDaemon boots up the egress networking processes on the foreign server.
@@ -41,6 +42,9 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 	}
 	if cfg.EgressBindIP != "" {
 		egressBindIP = net.ParseIP(cfg.EgressBindIP)
+	}
+	if cfg.DecoyPort != 0 {
+		decoyAddr = fmt.Sprintf("127.0.0.1:%d", cfg.DecoyPort)
 	}
 
 	// Dynamically bind to the configured port or fallback to 22
@@ -53,17 +57,17 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		color.Red("[x] CRITICAL: Failed to bind Egress Daemon on %s. Is port %d free? Error: %v", listenAddr, listenPort, err)
+		slog.Error("failed to bind egress daemon", "addr", listenAddr, "port", listenPort, "err", err)
 		return
 	}
 
-	color.Green("[✓] Foreign Egress Daemon actively listening on %s (egress mode: %s)", listenAddr, egressMode)
-	color.Cyan("[i] Real SSH daemon decoy target set to %s", decoySSHPrt)
+	slog.Info("egress daemon listening", "addr", listenAddr, "egress_mode", egressMode)
+	slog.Info("decoy target set", "decoy", decoyAddr)
 
 	// Mirror the real sshd banner so a genuine SSH client (password or key) routed
 	// to the decoy still completes key exchange on the public port. Kept fresh so
 	// it survives boot races (sshd not up yet) and sshd upgrades.
-	banner := newDecoyBannerMirror(decoySSHPrt)
+	banner := newDecoyBannerMirror(decoyAddr)
 
 	// Bounded, TTL'd replay protection for the authentication handshake.
 	replayFilter := securestream.NewReplayFilter(0)
@@ -92,9 +96,9 @@ func newDecoyBannerMirror(addr string) *decoyBannerMirror {
 	// the banner ready before we accept connections.
 	if b, err := mimic.FetchRealSSHBanner(addr); err == nil && b != "" {
 		m.v.Store(b)
-		color.Cyan("[i] Mirroring decoy SSH banner for transparent admin access.")
+		slog.Info("mirroring decoy SSH banner")
 	} else {
-		color.Yellow("[-] Decoy SSH banner not available yet from %s; retrying in the background (admin SSH via the decoy may fail until then).", addr)
+		slog.Warn("decoy SSH banner not available yet; retrying in background", "decoy", addr)
 	}
 	go m.refreshLoop(addr)
 	return m
@@ -112,7 +116,7 @@ func (m *decoyBannerMirror) refreshLoop(addr string) {
 		time.Sleep(3 * time.Second)
 		if b, err := mimic.FetchRealSSHBanner(addr); err == nil && b != "" {
 			m.v.Store(b)
-			color.Cyan("[i] Mirroring decoy SSH banner for transparent admin access.")
+			slog.Info("mirroring decoy SSH banner")
 			break
 		}
 	}
@@ -139,7 +143,7 @@ func handleIncomingConnection(conn net.Conn, expectedToken string, filter *secur
 		// protocol. Route it to the real OpenSSH decoy so the server is
 		// indistinguishable from an ordinary SSH host (no ban, uniform behavior).
 		if errors.Is(err, securestream.ErrAuth) {
-			color.Yellow("[-] Unauthorized/replayed probe from %s. Routing to Decoy SSH.", clientIP)
+			slog.Debug("unauthorized/replayed probe; routing to decoy", "client_ip", clientIP)
 		}
 		go proxyToDecoy(replayConn)
 		return
@@ -157,7 +161,7 @@ func handleIncomingConnection(conn net.Conn, expectedToken string, filter *secur
 		return
 	}
 
-	color.Green("[+] Authentic connection established from Iran Hub (%s)", clientIP)
+	slog.Info("authentic hub connection established", "client_ip", clientIP)
 
 	// 3. Accept logical streams from the Hub and route them to the open internet
 	go handleYamuxSession(session)
@@ -168,7 +172,7 @@ func proxyToDecoy(clientConn net.Conn) {
 	defer clientConn.Close()
 
 	// Dial the real SSH daemon we moved to port 2022
-	decoyConn, err := net.DialTimeout("tcp", decoySSHPrt, 5*time.Second)
+	decoyConn, err := net.DialTimeout("tcp", decoyAddr, 5*time.Second)
 	if err != nil {
 		return
 	}
@@ -240,7 +244,7 @@ func handleTCPStream(stream net.Conn) {
 	remoteConn, err := safeDialTarget(targetAddr)
 	if err != nil {
 		if errors.Is(err, errBlockedTarget) {
-			color.Red("[!] Blocked SSRF attempt to %s (%v)", targetAddr, err)
+			slog.Warn("blocked SSRF attempt (TCP)", "target", targetAddr, "err", err)
 		}
 		return
 	}

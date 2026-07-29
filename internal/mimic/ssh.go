@@ -1,6 +1,7 @@
 package mimic
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -83,9 +84,10 @@ func GetDynamicSSHBanner() string {
 	return defaultSSHBanner
 }
 
-// readBanner safely reads strictly up to the newline character, so it never
-// over-reads into the bytes that follow the banner.
-func readBanner(conn net.Conn) (string, error) {
+// readBannerConn reads strictly byte-by-byte up to the newline, so it never
+// over-reads past the banner. Used on the decoy path, where the bytes after the
+// banner are piped raw and must NOT be swallowed by a buffer.
+func readBannerConn(conn net.Conn) (string, error) {
 	var banner []byte
 	buf := make([]byte, 1)
 	for i := 0; i < 255; i++ {
@@ -99,6 +101,18 @@ func readBanner(conn net.Conn) (string, error) {
 		}
 	}
 	return string(banner), nil
+}
+
+// readBannerBuffered reads the banner from a bufio.Reader. Over-reading past the
+// banner is fine here: any buffered bytes (salt/first frame) stay in br and are
+// consumed by the secure handshake that shares it. The bufio buffer bounds the
+// banner length (a probe sending a huge line yields ErrBufferFull -> decoy).
+func readBannerBuffered(br *bufio.Reader) (string, error) {
+	line, err := br.ReadSlice('\n')
+	if err != nil {
+		return "", err
+	}
+	return string(line), nil
 }
 
 // FetchRealSSHBanner connects to the decoy sshd and returns its exact banner
@@ -115,7 +129,7 @@ func FetchRealSSHBanner(addr string) (string, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		return "", err
 	}
-	return readBanner(conn)
+	return readBannerConn(conn)
 }
 
 // ConsumeDecoyServerBanner reads and discards the SSH banner from the decoy so a
@@ -125,7 +139,7 @@ func ConsumeDecoyServerBanner(conn net.Conn) error {
 		return err
 	}
 	defer conn.SetReadDeadline(time.Time{})
-	_, err := readBanner(conn)
+	_, err := readBannerConn(conn)
 	return err
 }
 
@@ -140,16 +154,18 @@ func PerformClientHandshake(conn net.Conn, token string) (net.Conn, error) {
 	}
 	defer conn.SetDeadline(time.Time{})
 
-	// 1. Exchange banners (camouflage layer).
+	// 1. Exchange banners (camouflage layer). A single bufio.Reader is shared with
+	// the secure handshake so any bytes read past the banner are not lost.
+	br := bufio.NewReader(conn)
 	if _, err := conn.Write([]byte(GetDynamicSSHBanner())); err != nil {
 		return nil, fmt.Errorf("failed to write client banner: %w", err)
 	}
-	if _, err := readBanner(conn); err != nil {
+	if _, err := readBannerBuffered(br); err != nil {
 		return nil, fmt.Errorf("failed to read server banner: %w", err)
 	}
 
-	// 2. Upgrade to the authenticated, encrypted transport.
-	sc, err := securestream.ClientHandshake(conn, token)
+	// 2. Upgrade to the authenticated, encrypted transport (reads via br).
+	sc, err := securestream.ClientHandshake(conn, br, token)
 	if err != nil {
 		return nil, fmt.Errorf("secure handshake failed: %w", err)
 	}
@@ -174,13 +190,16 @@ func PerformServerHandshake(conn net.Conn, expectedToken string, filter *secures
 		serverBanner = GetDynamicSSHBanner()
 	}
 
+	// Record everything read from the client (for decoy replay on failure), and
+	// read through a single bufio.Reader shared with the secure handshake.
 	rec := &RecorderConn{Conn: conn, recording: true}
+	br := bufio.NewReader(rec)
 
 	// 1. Send our banner, then read + validate the client banner.
 	if _, err := conn.Write([]byte(serverBanner)); err != nil {
 		return nil, buildReplayConn(conn, rec), fmt.Errorf("failed to write server banner: %w", err)
 	}
-	clientBanner, err := readBanner(rec)
+	clientBanner, err := readBannerBuffered(br)
 	if err != nil {
 		return nil, buildReplayConn(conn, rec), fmt.Errorf("failed to read client banner: %w", err)
 	}
@@ -188,9 +207,9 @@ func PerformServerHandshake(conn net.Conn, expectedToken string, filter *secures
 		return nil, buildReplayConn(conn, rec), errors.New("invalid protocol banner signature")
 	}
 
-	// 2. Authenticate over the encrypted transport. A wrong PSK (or a probe that
-	// is not speaking our protocol) fails the AEAD tag -> route to decoy.
-	sc, err := securestream.ServerHandshake(rec, expectedToken, filter)
+	// 2. Authenticate over the encrypted transport (writes to conn, reads via br).
+	// A wrong PSK (or a probe not speaking our protocol) fails the AEAD tag -> decoy.
+	sc, err := securestream.ServerHandshake(conn, br, expectedToken, filter)
 	if err != nil {
 		return nil, buildReplayConn(conn, rec), err
 	}

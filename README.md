@@ -19,25 +19,32 @@ Hedioum Pool Tunnel is a high-performance, enterprise-grade connection multiplex
 2. **Hedioum Hub (Iran):** Receives the SOCKS5 payload, evaluates pool health, and multiplexes the stream (via HashiCorp Yamux) over an authenticated, encrypted physical connection pool using the Chaos Mesh algorithm.
 3. **Hedioum Egress (Foreign):** Authenticates the Hub via the AEAD handshake (unauthenticated probes go to the SSH decoy), enforces SSRF protections (resolve-once, blocks private/link-local/CGNAT), extracts target metadata, and dials the open internet over forced IPv4 sockets.
 
-## 🚀 Installation & Seamless Updates
+## 🚀 Installation & Updates
 
-You can deploy the Hedioum daemon on any Ubuntu/Debian server using our 1-click installation script. The script automatically fetches the latest compiled release from GitHub and preserves your configuration across updates.
+The binary is self-sufficient: it installs its own systemd service, opens the
+firewall, and manages its config — so `install.sh` is just a thin bootstrap
+(detect architecture → download → run the binary). See **[docs/DEPLOY.md](docs/DEPLOY.md)** for the full guide, including non-interactive (Ansible-friendly) setup and the GitHub-blocked path.
 
-**Installation Order:** You MUST install the Foreign Node first to generate the Authentication Token required by the Iran Node.
+**Installation Order:** install the **Foreign (egress)** node first to generate the auth token the Iran node needs.
 
-### Step 1: Deploy Foreign Node (Egress)
-Run the following command on your foreign VPS:
-
-    bash <(curl -s https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/install.sh)
-
-Follow the interactive wizard. Copy the generated Auth Token.
-
-### Step 2: Deploy Iran Node (Hub)
-Run the same command on your Iran VPS:
+### One-line bootstrap (GitHub reachable)
+Run on each VPS (foreign first):
 
     bash <(curl -s https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/install.sh)
 
-Select "Iran Node" and add your Foreign Node. You will be prompted to define your DPI evasion parameters (Bandwidth Limits & Jitter) during setup.
+### Manual (GitHub blocked)
+Copy the matching binary (`hedioum-tunnel` / `hedioum-tunnel-arm64`) to the server, then:
+
+    chmod +x hedioum-tunnel && ./hedioum-tunnel install && hedioum-tunnel
+
+### Non-interactive (automation)
+
+    hedioum-tunnel install
+    hedioum-tunnel setup-foreign --move-ssh        # foreign; prints the token
+    hedioum-tunnel setup-iran --alias DE-01 --target <IP>:22 --socks-port 40001 --token <hex>
+    systemctl start hedioum.service
+
+Updates are rollback-safe (`hedioum-tunnel update`, or `update --file <path>` when GitHub is blocked).
 
 ## ⚙️ Management Dashboard
 

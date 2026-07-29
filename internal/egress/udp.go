@@ -2,11 +2,11 @@ package egress
 
 import (
 	"errors"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
 
@@ -73,7 +73,7 @@ func handleUDPStream(stream net.Conn) {
 			if derr != nil {
 				mu.Unlock()
 				if errors.Is(derr, errBlockedTarget) {
-					color.Red("[!] Blocked UDP SSRF attempt to %s", key)
+					slog.Warn("blocked SSRF attempt (UDP)", "target", key)
 				}
 				continue
 			}

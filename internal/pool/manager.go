@@ -2,7 +2,7 @@ package pool
 
 import (
 	"errors"
-	"log"
+	"log/slog"
 	"math/rand"
 	"net"
 	"sync"
@@ -199,7 +199,7 @@ func (np *NodePool) evaluateHealthAndScale() {
 	// 1. Analyze all sessions
 	for _, s := range np.sessions {
 		if s.IsClosed() {
-			log.Printf("[Pool-%s] Purged dead/frozen physical connection.\n", np.Alias)
+			slog.Info("purged dead physical connection", "node", np.Alias)
 			continue
 		}
 
@@ -225,13 +225,13 @@ func (np *NodePool) evaluateHealthAndScale() {
 			if activeCount > np.minConnections && mbps < 1 && s.IdleTime() > dynamicIdleLimit {
 				s.SetDraining() // Shift to Draining (Wait for logical streams to drop to zero)
 				activeCount--
-				log.Printf("[Pool-%s] Scaled DOWN: Connection moved to Draining state (Idle/Low load).\n", np.Alias)
+				slog.Info("scaled down: connection draining (idle/low load)", "node", np.Alias)
 			}
 		} else if s.IsDraining() {
 			// Deep cleanup: Only close a draining session when ALL its streams have naturally finished
 			if s.ActiveStreams() == 0 {
 				s.Close()
-				log.Printf("[Pool-%s] Draining complete. Empty connection closed safely.\n", np.Alias)
+				slog.Info("draining complete: connection closed", "node", np.Alias)
 				continue // Remove from memory
 			}
 		}
@@ -271,7 +271,7 @@ func (np *NodePool) executeScaleUp() {
 	for _, s := range np.sessions {
 		if s.IsDraining() {
 			s.Revive()
-			log.Printf("[Pool-%s] Scaled UP (Revive): Resurrected a draining connection back to Active.\n", np.Alias)
+			slog.Info("scaled up: revived draining connection", "node", np.Alias)
 			np.mu.Unlock()
 			return
 		}
@@ -284,7 +284,7 @@ func (np *NodePool) executeScaleUp() {
 	if totalConns < np.maxConnections {
 		np.replenishPool(1)
 	} else {
-		log.Printf("[Pool-%s] Warning: Max physical limits reached (%d). Cannot scale further.\n", np.Alias, np.maxConnections)
+		slog.Warn("max physical connections reached", "node", np.Alias, "max", np.maxConnections)
 	}
 }
 
@@ -301,13 +301,13 @@ func (np *NodePool) replenishPool(needed int) {
 			np.mu.Lock()
 			if len(np.sessions) < np.maxConnections {
 				np.sessions = append(np.sessions, wrappedSession)
-				log.Printf("[Pool-%s] Scaled UP (Dial): +1 connection established. Total Pipes: %d/%d\n", np.Alias, len(np.sessions), np.maxConnections)
+				slog.Info("scaled up: dialed new connection", "node", np.Alias, "total", len(np.sessions), "max", np.maxConnections)
 			} else {
 				wrappedSession.Close()
 			}
 			np.mu.Unlock()
 		} else {
-			log.Printf("[Pool-%s] Failed to dial new connection: %v\n", np.Alias, err)
+			slog.Warn("failed to dial new connection", "node", np.Alias, "err", err)
 		}
 	}
 }

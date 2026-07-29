@@ -19,6 +19,9 @@ type AppConfig struct {
 	// optionally pins the source IP on multi-IP servers.
 	EgressIPMode string `json:"egress_ip_mode,omitempty"`
 	EgressBindIP string `json:"egress_bind_ip,omitempty"`
+	// DecoyPort is the local port the real sshd was relocated to; unauthorized
+	// probes on the public listen port are proxied here. Default 2022.
+	DecoyPort int `json:"decoy_port,omitempty"`
 
 	// Iran Node specific properties
 	ForeignNodes []ForeignNode `json:"foreign_nodes,omitempty"`
@@ -37,14 +40,18 @@ type ForeignNode struct {
 	AuthToken           string `json:"auth_token"`
 }
 
-// getConfigPath determines the absolute storage destination for configuration persistence.
-// It prioritizes the production environment directory (/etc/hedioum) if accessible,
-// otherwise falling back gracefully to the current working directory.
+// getConfigPath determines the storage destination for the configuration.
+// Production uses /etc/hedioum; when running as root we always use it (SaveConfig
+// creates it) so a fresh install does not accidentally write the config to the
+// current working directory. Non-root dev falls back to the local directory.
 func getConfigPath() string {
 	const prodDir = "/etc/hedioum"
 	const fileName = "hedioum.json"
 
 	if stat, err := os.Stat(prodDir); err == nil && stat.IsDir() {
+		return filepath.Join(prodDir, fileName)
+	}
+	if os.Geteuid() == 0 {
 		return filepath.Join(prodDir, fileName)
 	}
 	return fileName
@@ -71,6 +78,9 @@ func LoadConfig() (*AppConfig, error) {
 	// Ensures existing deployments won't crash due to missing fields in old JSON configs.
 	if cfg.Role == "foreign" && cfg.EgressIPMode == "" {
 		cfg.EgressIPMode = "ipv4" // default: no IPv6 identity leak
+	}
+	if cfg.Role == "foreign" && cfg.DecoyPort == 0 {
+		cfg.DecoyPort = 2022 // default decoy sshd port
 	}
 	for i := range cfg.ForeignNodes {
 		if cfg.ForeignNodes[i].TargetPort == 0 {
