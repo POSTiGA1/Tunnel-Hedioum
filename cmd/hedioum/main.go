@@ -102,21 +102,40 @@ func handleOpenFirewall() {
 		return
 	}
 
-	port := cfg.ForeignListenPort
-	if port == 0 {
-		port = 22
+	for _, port := range firewallPorts(cfg) {
+		backend, err := firewall.EnsurePortOpen(port)
+		switch {
+		case err != nil:
+			color.Yellow("[-] Firewall (%s): could not open tcp/%d automatically: %v", backend, port, err)
+			color.Yellow("    Please allow tcp/%d manually if remote clients cannot connect.", port)
+		case backend == "none":
+			color.Cyan("[i] No active host firewall detected; tcp/%d needs no rule.", port)
+		default:
+			color.Green("[✓] Ensured tcp/%d is open via %s.", port, backend)
+		}
 	}
+}
 
-	backend, err := firewall.EnsurePortOpen(port)
-	switch {
-	case err != nil:
-		color.Yellow("[-] Firewall (%s): could not open tcp/%d automatically: %v", backend, port, err)
-		color.Yellow("    Please allow tcp/%d manually if remote clients cannot connect.", port)
-	case backend == "none":
-		color.Cyan("[i] No active host firewall detected; tcp/%d needs no rule.", port)
-	default:
-		color.Green("[✓] Ensured tcp/%d is open via %s.", port, backend)
+// firewallPorts returns every port the foreign egress must open: one per
+// camouflage listener. parseConfig always populates Mimics for a foreign node
+// (synthesizing a single SSH listener for legacy configs), so every active mimic
+// gets a rule — not just the legacy SSH port. Falls back to the legacy port only
+// if Mimics is somehow empty.
+func firewallPorts(cfg *config.AppConfig) []int {
+	ports := make([]int, 0, len(cfg.Mimics))
+	for _, ml := range cfg.Mimics {
+		if ml.Port != 0 {
+			ports = append(ports, ml.Port)
+		}
 	}
+	if len(ports) == 0 {
+		port := cfg.ForeignListenPort
+		if port == 0 {
+			port = 22
+		}
+		ports = append(ports, port)
+	}
+	return ports
 }
 
 func printHeader() {
