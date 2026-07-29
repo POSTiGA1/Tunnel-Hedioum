@@ -25,9 +25,36 @@ import (
 
 // Stream types (first byte of every logical stream).
 const (
-	StreamTCP byte = 0x01
-	StreamUDP byte = 0x03
+	StreamTCP       byte = 0x01
+	StreamUDP       byte = 0x03
+	StreamSpeedtest byte = 0x05 // [0x05][dir 1B][u16 seconds] then random data
 )
+
+// Speedtest directions (from the hub's perspective).
+const (
+	SpeedDown byte = 0x01 // egress sends, hub receives (download)
+	SpeedUp   byte = 0x02 // hub sends, egress drains (upload)
+)
+
+// WriteSpeedtestHeader writes [StreamSpeedtest][dir][u16 seconds].
+func WriteSpeedtestHeader(w io.Writer, dir byte, seconds uint16) error {
+	var b [4]byte
+	b[0] = StreamSpeedtest
+	b[1] = dir
+	binary.BigEndian.PutUint16(b[2:4], seconds)
+	_, err := w.Write(b[:])
+	return err
+}
+
+// ReadSpeedtestHeader reads [dir][u16 seconds] (the stream type byte must already
+// be consumed via ReadStreamType).
+func ReadSpeedtestHeader(r io.Reader) (dir byte, seconds uint16, err error) {
+	var b [3]byte
+	if _, err = io.ReadFull(r, b[:]); err != nil {
+		return 0, 0, err
+	}
+	return b[0], binary.BigEndian.Uint16(b[1:3]), nil
+}
 
 // SOCKS-style address types.
 const (

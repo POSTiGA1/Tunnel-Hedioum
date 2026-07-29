@@ -203,6 +203,8 @@ func handleLogicalStream(stream net.Conn) {
 		handleTCPStream(stream)
 	case tunproto.StreamUDP:
 		handleUDPStream(stream)
+	case tunproto.StreamSpeedtest:
+		handleSpeedtestStream(stream)
 	default:
 		// Unknown stream type: drop.
 	}
