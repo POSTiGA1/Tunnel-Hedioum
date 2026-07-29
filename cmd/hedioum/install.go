@@ -26,6 +26,12 @@ func cmdInstall(args []string) {
 		fail("install must run as root")
 	}
 
+	// The config/working directory must exist before the (namespaced) service can
+	// start — the hardened unit sets WorkingDirectory + ReadWritePaths to it.
+	if err := os.MkdirAll("/etc/hedioum", 0755); err != nil {
+		fail("cannot create /etc/hedioum: %v", err)
+	}
+
 	self, err := os.Executable()
 	if err != nil {
 		fail("cannot locate the running binary: %v", err)

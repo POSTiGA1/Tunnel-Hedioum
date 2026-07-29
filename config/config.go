@@ -40,14 +40,18 @@ type ForeignNode struct {
 	AuthToken           string `json:"auth_token"`
 }
 
-// getConfigPath determines the absolute storage destination for configuration persistence.
-// It prioritizes the production environment directory (/etc/hedioum) if accessible,
-// otherwise falling back gracefully to the current working directory.
+// getConfigPath determines the storage destination for the configuration.
+// Production uses /etc/hedioum; when running as root we always use it (SaveConfig
+// creates it) so a fresh install does not accidentally write the config to the
+// current working directory. Non-root dev falls back to the local directory.
 func getConfigPath() string {
 	const prodDir = "/etc/hedioum"
 	const fileName = "hedioum.json"
 
 	if stat, err := os.Stat(prodDir); err == nil && stat.IsDir() {
+		return filepath.Join(prodDir, fileName)
+	}
+	if os.Geteuid() == 0 {
 		return filepath.Join(prodDir, fileName)
 	}
 	return fileName
