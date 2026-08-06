@@ -33,6 +33,7 @@ type PoolStats struct {
 // NodePool manages an auto-scaling pool of Yamux sessions to a single foreign server.
 type NodePool struct {
 	Alias          string
+	label          string // "tcp" or "udp" — which sub-pool, for observability in logs
 	TargetIP       string
 	minConnections int
 	maxConnections int
@@ -75,9 +76,10 @@ func NewHubManager() *HubManager {
 }
 
 // newNodePool builds and starts a monitored connection pool.
-func newNodePool(cfg config.ForeignNode, minConns, maxConns int, dialer DialFunc) *NodePool {
+func newNodePool(cfg config.ForeignNode, label string, minConns, maxConns int, dialer DialFunc) *NodePool {
 	pool := &NodePool{
 		Alias:          cfg.Alias,
+		label:          label,
 		TargetIP:       cfg.TargetIP,
 		minConnections: minConns,
 		maxConnections: maxConns,
@@ -106,8 +108,8 @@ func (hm *HubManager) RegisterNode(cfg config.ForeignNode, dialer DialFunc) {
 	}
 
 	hm.pools[cfg.Alias] = &nodePools{
-		tcp: newNodePool(cfg, minConns, maxConns, dialer),
-		udp: newNodePool(cfg, udpMinConns, udpMaxConns, dialer),
+		tcp: newNodePool(cfg, "tcp", minConns, maxConns, dialer),
+		udp: newNodePool(cfg, "udp", udpMinConns, udpMaxConns, dialer),
 	}
 }
 
@@ -199,7 +201,7 @@ func (np *NodePool) evaluateHealthAndScale() {
 	// 1. Analyze all sessions
 	for _, s := range np.sessions {
 		if s.IsClosed() {
-			slog.Info("purged dead physical connection", "node", np.Alias)
+			slog.Info("purged dead physical connection", "node", np.Alias, "pool", np.label)
 			continue
 		}
 
@@ -225,13 +227,13 @@ func (np *NodePool) evaluateHealthAndScale() {
 			if activeCount > np.minConnections && mbps < 1 && s.IdleTime() > dynamicIdleLimit {
 				s.SetDraining() // Shift to Draining (Wait for logical streams to drop to zero)
 				activeCount--
-				slog.Info("scaled down: connection draining (idle/low load)", "node", np.Alias)
+				slog.Info("scaled down: connection draining (idle/low load)", "node", np.Alias, "pool", np.label)
 			}
 		} else if s.IsDraining() {
 			// Deep cleanup: Only close a draining session when ALL its streams have naturally finished
 			if s.ActiveStreams() == 0 {
 				s.Close()
-				slog.Info("draining complete: connection closed", "node", np.Alias)
+				slog.Info("draining complete: connection closed", "node", np.Alias, "pool", np.label)
 				continue // Remove from memory
 			}
 		}
@@ -271,7 +273,7 @@ func (np *NodePool) executeScaleUp() {
 	for _, s := range np.sessions {
 		if s.IsDraining() {
 			s.Revive()
-			slog.Info("scaled up: revived draining connection", "node", np.Alias)
+			slog.Info("scaled up: revived draining connection", "node", np.Alias, "pool", np.label)
 			np.mu.Unlock()
 			return
 		}
@@ -284,7 +286,7 @@ func (np *NodePool) executeScaleUp() {
 	if totalConns < np.maxConnections {
 		np.replenishPool(1)
 	} else {
-		slog.Warn("max physical connections reached", "node", np.Alias, "max", np.maxConnections)
+		slog.Warn("max physical connections reached", "node", np.Alias, "pool", np.label, "max", np.maxConnections)
 	}
 }
 
@@ -301,13 +303,13 @@ func (np *NodePool) replenishPool(needed int) {
 			np.mu.Lock()
 			if len(np.sessions) < np.maxConnections {
 				np.sessions = append(np.sessions, wrappedSession)
-				slog.Info("scaled up: dialed new connection", "node", np.Alias, "total", len(np.sessions), "max", np.maxConnections)
+				slog.Info("scaled up: dialed new connection", "node", np.Alias, "pool", np.label, "total", len(np.sessions), "max", np.maxConnections)
 			} else {
 				wrappedSession.Close()
 			}
 			np.mu.Unlock()
 		} else {
-			slog.Warn("failed to dial new connection", "node", np.Alias, "err", err)
+			slog.Warn("failed to dial new connection", "node", np.Alias, "pool", np.label, "err", err)
 		}
 	}
 }
