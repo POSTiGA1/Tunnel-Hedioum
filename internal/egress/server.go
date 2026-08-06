@@ -15,6 +15,7 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/securestream"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tlscert"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
@@ -62,7 +63,7 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 		go startHTTPDecoy(cfg.HTTPDecoyPort)
 	}
 
-	select {} // block forever
+	sysutil.WaitForTerminationSignal() // block until terminated (see helper)
 }
 
 // startHTTPDecoy binds a plaintext port (default 80) and answers every connection

@@ -9,6 +9,7 @@ import (
 
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/pool"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
 
@@ -29,8 +30,14 @@ func StartIranHub(cfg *config.AppConfig) {
 		go startLocalSocksListener(nodeCopy, hubManager)
 	}
 
-	// Block the main thread to keep daemons running indefinitely.
-	select {}
+	if len(cfg.ForeignNodes) == 0 {
+		slog.Warn("iran hub started with no foreign nodes; add a node and restart")
+	}
+
+	// Block until terminated. Not a bare select{}: with zero nodes there are no
+	// other goroutines, and select{} would trip the runtime's deadlock detector
+	// and crash-loop the service.
+	sysutil.WaitForTerminationSignal()
 }
 
 // startLocalSocksListener boots up a TCP server listening exclusively on 127.0.0.1.
