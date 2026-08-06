@@ -3,6 +3,7 @@ package mimic
 import (
 	"io"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -82,6 +83,50 @@ func TestStartTLSPrologueOnly(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("server prologue: %v", err)
+	}
+}
+
+// TestIMAPPrologueCapabilityFirst verifies the server handles a real IMAP client
+// that sends CAPABILITY (and NOOP) before STARTTLS, instead of bouncing it to the
+// decoy — the failure a live openssl s_client -starttls imap probe exposed.
+func TestIMAPPrologueCapabilityFirst(t *testing.T) {
+	c, s := net.Pipe()
+	defer c.Close()
+	defer s.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- serverStartTLSPrologue(s, "imap") }()
+
+	if _, err := stReadLine(c); err != nil { // * OK greeting
+		t.Fatalf("greeting: %v", err)
+	}
+	// A real client's typical pre-TLS chatter.
+	if err := stWrite(c, "a1 CAPABILITY"); err != nil {
+		t.Fatal(err)
+	}
+	for { // read the untagged * CAPABILITY line then the tagged a1 OK
+		l, err := stReadLine(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(l, "a1 ") {
+			break
+		}
+	}
+	if err := stWrite(c, "a2 NOOP"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stReadLine(c); err != nil { // a2 OK
+		t.Fatal(err)
+	}
+	if err := stWrite(c, "a3 STARTTLS"); err != nil {
+		t.Fatal(err)
+	}
+	if l, err := stReadLine(c); err != nil || !strings.Contains(l, "OK") { // a3 OK ...
+		t.Fatalf("STARTTLS ack = %q, err %v", l, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("server prologue should have advanced to TLS, got %v", err)
 	}
 }
 

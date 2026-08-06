@@ -102,15 +102,38 @@ func serverStartTLSPrologue(conn net.Conn, proto string) error {
 		if err := stWrite(conn, "* OK [CAPABILITY IMAP4rev1 STARTTLS] ready"); err != nil {
 			return err
 		}
-		line, err := stReadLine(conn) // "<tag> STARTTLS"
-		if err != nil {
-			return err
+		// Real IMAP clients (Thunderbird, openssl s_client -starttls imap, ...) issue
+		// CAPABILITY and/or NOOP before STARTTLS. Answer those and keep reading until
+		// STARTTLS, so a genuine client/probe is not bounced to the decoy after one
+		// command. Our own client sends "<tag> STARTTLS" directly and matches on the
+		// first iteration. Bounded to avoid an unbounded plaintext dialogue.
+		for i := 0; i < 5; i++ {
+			line, err := stReadLine(conn)
+			if err != nil {
+				return err
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				return errNoStartTLS
+			}
+			tag, cmd := fields[0], strings.ToUpper(fields[1])
+			switch cmd {
+			case "STARTTLS":
+				return stWrite(conn, tag+" OK Begin TLS negotiation now")
+			case "CAPABILITY":
+				_ = stWrite(conn, "* CAPABILITY IMAP4rev1 STARTTLS")
+				if err := stWrite(conn, tag+" OK CAPABILITY completed"); err != nil {
+					return err
+				}
+			case "NOOP":
+				if err := stWrite(conn, tag+" OK NOOP completed"); err != nil {
+					return err
+				}
+			default:
+				return errNoStartTLS
+			}
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 || !strings.EqualFold(fields[1], "STARTTLS") {
-			return errNoStartTLS
-		}
-		return stWrite(conn, fields[0]+" OK Begin TLS negotiation now")
+		return errNoStartTLS
 
 	default:
 		return errNoStartTLS
