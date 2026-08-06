@@ -34,3 +34,29 @@ func TestFirewallPortsLegacyFallback(t *testing.T) {
 		t.Fatalf("empty fallback = %v, want [22]", got)
 	}
 }
+
+func TestFirewallPortsIncludesHTTPDecoy(t *testing.T) {
+	cfg := &config.AppConfig{
+		Mimics:        []config.MimicListener{{Type: "tls", Port: 443}},
+		HTTPDecoyPort: 80,
+	}
+	got := firewallPorts(cfg)
+	has := func(p int) bool {
+		for _, x := range got {
+			if x == p {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(443) || !has(80) {
+		t.Fatalf("expected 443 and 80 open, got %v", got)
+	}
+	// Disabled decoy (-1) must not add a rule.
+	cfg.HTTPDecoyPort = -1
+	for _, p := range firewallPorts(cfg) {
+		if p < 1 {
+			t.Fatalf("disabled decoy leaked a bad port %d", p)
+		}
+	}
+}

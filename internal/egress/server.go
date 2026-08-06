@@ -55,7 +55,37 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 	for _, ml := range cfg.Mimics {
 		go startMimicListener(cfg, ml, replayFilter)
 	}
+
+	// Optional plaintext HTTP decoy: makes the box look like an ordinary Apache
+	// web host to IP-reputation scanners hitting :80 (does nothing else).
+	if cfg.HTTPDecoyPort > 0 {
+		go startHTTPDecoy(cfg.HTTPDecoyPort)
+	}
+
 	select {} // block forever
+}
+
+// startHTTPDecoy binds a plaintext port (default 80) and answers every connection
+// with the Apache2 Ubuntu default page — pure camouflage, no tunnel.
+func startHTTPDecoy(port int) {
+	listenAddr := fmt.Sprintf(":%d", port)
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		// Something already owns :80 (a real web server) — that is fine, leave it be.
+		slog.Warn("HTTP decoy not started", "addr", listenAddr, "err", err)
+		return
+	}
+	slog.Info("HTTP decoy active", "addr", listenAddr)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			continue
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			mimic.ServeWebDecoy(c)
+		}(conn)
+	}
 }
 
 // startMimicListener binds one port and serves it with the given mimic.

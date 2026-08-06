@@ -84,3 +84,16 @@ func TestRemoveForeignNode(t *testing.T) {
 		t.Fatal("removing a missing alias should return false")
 	}
 }
+
+func TestHTTPDecoyDefaults(t *testing.T) {
+	// Foreign with no field -> defaulted to 80.
+	cfg, _ := parseConfig([]byte(`{"role":"foreign","auth_token":"x"}`))
+	if cfg.HTTPDecoyPort != 80 {
+		t.Fatalf("default http_decoy_port = %d, want 80", cfg.HTTPDecoyPort)
+	}
+	// A negative sentinel (disabled) must be preserved, not re-defaulted.
+	cfg, _ = parseConfig([]byte(`{"role":"foreign","auth_token":"x","http_decoy_port":-1}`))
+	if cfg.HTTPDecoyPort != -1 {
+		t.Fatalf("disabled http_decoy_port = %d, want -1", cfg.HTTPDecoyPort)
+	}
+}

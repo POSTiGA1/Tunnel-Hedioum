@@ -112,9 +112,12 @@ func TestTLSMimicWebDecoy(t *testing.T) {
 		t.Fatal(err)
 	}
 	tc.SetReadDeadline(time.Now().Add(4 * time.Second))
-	buf := make([]byte, 2048)
-	n, _ := tc.Read(buf)
-	if !bytes.Contains(buf[:n], []byte("200 OK")) || !bytes.Contains(buf[:n], []byte("It works")) {
-		t.Fatalf("web decoy response unexpected: %q", buf[:n])
+	// The Apache default page spans several KB / TLS records; drain until the
+	// connection closes so the assertions don't race a partial first read.
+	got, _ := io.ReadAll(tc)
+	for _, want := range []string{"200 OK", "Server: Apache", "It works", "Apache2 Ubuntu Default Page"} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Fatalf("web decoy response missing %q: %q", want, got)
+		}
 	}
 }
