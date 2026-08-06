@@ -58,36 +58,51 @@ func setupForeignNode(cfg *config.AppConfig) {
 		Default: detectedIP,
 	}, &ip, survey.WithValidator(survey.Required))
 
-	// Public listen port (default 22). A non-22 port helps when outbound :22 is
-	// blocked, but weakens the SSH mimic.
-	var listenPortStr string
-	survey.AskOne(&survey.Input{Message: "Public listen port:", Default: "22"}, &listenPortStr)
-	listenPort := clampPort(listenPortStr, 22)
-	if listenPort != 22 {
-		color.Yellow("[!] Listen port %d: the SSH mimic is most convincing on 22; a non-22 port may be easier to fingerprint.", listenPort)
+	// Which camouflages this node listens behind (checkbox; "all" = whole arsenal).
+	mimics := promptMimics()
+
+	// SSH-specific prompts only matter when the SSH mimic is enabled.
+	listenPort := 22
+	decoyPort := 2022
+	if containsStr(mimics, "ssh") {
+		var listenPortStr string
+		survey.AskOne(&survey.Input{Message: "SSH mimic public port:", Default: "22"}, &listenPortStr)
+		listenPort = clampPort(listenPortStr, 22)
+		if listenPort != 22 {
+			color.Yellow("[!] SSH mimic on port %d: it is most convincing on 22.", listenPort)
+		}
+
+		var decoyPortStr string
+		survey.AskOne(&survey.Input{Message: "Decoy sshd port (OpenSSH is moved here):", Default: "2022"}, &decoyPortStr)
+		decoyPort = clampPort(decoyPortStr, 2022)
+
+		changeSSH := false
+		survey.AskOne(&survey.Confirm{
+			Message: fmt.Sprintf("Move OpenSSH to port %d to free port %d for the SSH mimic?", decoyPort, listenPort),
+			Default: true,
+		}, &changeSSH)
+		if changeSSH {
+			if err := sysutil.ChangeSSHPort(strconv.Itoa(decoyPort)); err != nil {
+				color.Red("[x] OpenSSH port relocation failed: %v", err)
+			} else {
+				color.Green("[✓] OpenSSH shifted to %d. Decoy port available.", decoyPort)
+			}
+		}
 	}
 
-	// Decoy sshd port (OpenSSH is relocated here).
-	var decoyPortStr string
-	survey.AskOne(&survey.Input{Message: "Decoy sshd port (OpenSSH is moved here):", Default: "2022"}, &decoyPortStr)
-	decoyPort := clampPort(decoyPortStr, 2022)
-
-	changeSSH := false
-	survey.AskOne(&survey.Confirm{
-		Message: fmt.Sprintf("Move OpenSSH to port %d to free port %d for the tunnel/decoy?", decoyPort, listenPort),
-		Default: true,
-	}, &changeSSH)
-
-	if changeSSH {
-		if err := sysutil.ChangeSSHPort(strconv.Itoa(decoyPort)); err != nil {
-			color.Red("[x] OpenSSH port relocation failed: %v", err)
-		} else {
-			color.Green("[✓] OpenSSH shifted to %d. Decoy port available.", decoyPort)
+	// Build one listener per selected mimic on its conventional port.
+	var mimicList []config.MimicListener
+	for _, ty := range mimics {
+		ml := config.MimicListener{Type: ty, Port: mimicPort(ty, listenPort)}
+		if ty == "ssh" {
+			ml.Decoy = fmt.Sprintf("127.0.0.1:%d", decoyPort)
 		}
+		mimicList = append(mimicList, ml)
 	}
 
 	cfg.ForeignListenPort = listenPort
 	cfg.DecoyPort = decoyPort
+	cfg.Mimics = mimicList
 	cfg.AuthToken = sysutil.GenerateSecureToken()
 
 	// IPv6 egress is opt-in (default IPv4-only to avoid leaking the v6 identity).
@@ -113,8 +128,12 @@ func setupForeignNode(cfg *config.AppConfig) {
 	}
 
 	color.HiWhite("\n[INFO] Provisioning Summary:")
-	fmt.Printf(" - Listen Port: %d\n", cfg.ForeignListenPort)
-	fmt.Printf(" - Auth Token:  %s\n", color.HiYellowString(cfg.AuthToken))
+	labels := make([]string, len(mimicList))
+	for i, m := range mimicList {
+		labels[i] = fmt.Sprintf("%s:%d", m.Type, m.Port)
+	}
+	fmt.Printf(" - Mimics:     %s\n", strings.Join(labels, ", "))
+	fmt.Printf(" - Auth Token: %s\n", color.HiYellowString(cfg.AuthToken))
 	color.HiRed("   (CRITICAL: Retain this token for Iran Hub configuration)\n")
 }
 
@@ -137,7 +156,7 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 		},
 		{
 			Name:   "targetport",
-			Prompt: &survey.Input{Message: "Foreign Egress Port:", Default: "22"},
+			Prompt: &survey.Input{Message: "Foreign SSH mimic port (other mimics use standard ports):", Default: "22"},
 		},
 		{
 			Name:   "localsocksport",
@@ -193,6 +212,17 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 	node.MaxConnections = safeAtoi(answers.MaxConnections, 20)
 	node.BandwidthLimitMbps = safeAtoi(answers.BandwidthLimit, 8)
 	node.BandwidthJitterMbps = safeAtoi(answers.BandwidthJitter, 2)
+
+	// Which mimics to reach this node over (checkbox; must match what the foreign
+	// node runs). Populating Endpoints is what enables the multi-mimic arsenal —
+	// without it the node falls back to a single synthesized SSH endpoint.
+	for _, ty := range promptMimics() {
+		node.Endpoints = append(node.Endpoints, config.Endpoint{
+			Target: net.JoinHostPort(node.TargetIP, strconv.Itoa(mimicPort(ty, node.TargetPort))),
+			Mimic:  ty,
+		})
+	}
+	color.Green("[✓] Endpoints: %d mimic(s) toward %s", len(node.Endpoints), node.TargetIP)
 
 	cfg.UpdateForeignNode(node)
 }
@@ -258,4 +288,69 @@ func safeAtoi(s string, defaultVal int) int {
 		return defaultVal
 	}
 	return val
+}
+
+// allMimics is the full camouflage arsenal, in the order the wizard offers it.
+var allMimics = []string{"ssh", "tls", "smtp", "imap", "smtps", "imaps"}
+
+// promptMimics shows a checkbox selection of camouflage protocols and returns the
+// chosen types. The first option ("all") selects the whole arsenal. Never returns
+// empty (falls back to ssh+tls), so a config always has at least one listener.
+func promptMimics() []string {
+	const allOpt = "all (enable every mimic)"
+	var sel []string
+	survey.AskOne(&survey.MultiSelect{
+		Message: "Select camouflage protocols (Space toggles, Enter confirms):",
+		Options: append([]string{allOpt}, allMimics...),
+		Default: []string{"ssh", "tls"},
+		Help:    "tls=HTTPS:443, ssh=22, smtp=587, imap=143, smtps=465, imaps=993. Run several for a stronger, shifting signature.",
+	}, &sel)
+
+	chosen := map[string]bool{}
+	for _, s := range sel {
+		if s == allOpt {
+			return append([]string{}, allMimics...)
+		}
+		chosen[s] = true
+	}
+	var out []string
+	for _, t := range allMimics {
+		if chosen[t] {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		out = []string{"ssh", "tls"} // never leave a node with no camouflage
+	}
+	return out
+}
+
+// mimicPort maps a mimic type to its conventional port; the SSH port is caller-set
+// so the operator can relocate it when outbound :22 is blocked.
+func mimicPort(ty string, sshPort int) int {
+	switch ty {
+	case "ssh":
+		return sshPort
+	case "tls":
+		return 443
+	case "smtp":
+		return 587
+	case "imap":
+		return 143
+	case "smtps":
+		return 465
+	case "imaps":
+		return 993
+	}
+	return 0
+}
+
+// containsStr reports whether s is in list.
+func containsStr(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
