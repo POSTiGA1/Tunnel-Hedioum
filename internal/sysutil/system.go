@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/firewall"
 )
 
 // GetPublicIPv4 safely resolves the server's public IPv4 address, forcing v4 transport
@@ -113,13 +115,18 @@ func ChangeSSHPort(newPort string) error {
 	_ = exec.Command("systemctl", "enable", "ssh.service").Run()
 	_ = exec.Command("systemctl", "enable", "sshd.service").Run()
 
-	// 6. Handle Firewall (UFW) dynamically so the user doesn't get locked out
-	if isUFWActive() {
-		color.Yellow("[*] UFW Firewall is active. Opening new SSH port %s/tcp...", newPort)
-		if err := exec.Command("ufw", "allow", fmt.Sprintf("%s/tcp", newPort)).Run(); err != nil {
-			color.Red("[!] Warning: Failed to add UFW rule automatically. Please run 'ufw allow %s/tcp' manually.", newPort)
-		} else {
-			color.Green("[✓] UFW rule added successfully.")
+	// 6. Open the new SSH (decoy) port on whatever firewall the host runs — ufw,
+	// firewalld, or iptables/ip6tables — so the admin is not locked out on non-ufw
+	// distros. This is the safety path to reach the box if the mimic ever stops.
+	if p, convErr := strconv.Atoi(newPort); convErr == nil {
+		switch backend, fwErr := firewall.EnsurePortOpen(p); {
+		case fwErr != nil:
+			color.Red("[!] Warning: could not open %s/tcp via %s automatically: %v", newPort, backend, fwErr)
+			color.Red("    Please allow %s/tcp manually so you can still reach SSH.", newPort)
+		case backend == "none":
+			color.HiBlack("[i] No active host firewall; %s/tcp needs no rule.", newPort)
+		default:
+			color.Green("[✓] Opened %s/tcp via %s.", newPort, backend)
 		}
 	}
 

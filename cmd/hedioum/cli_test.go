@@ -41,6 +41,41 @@ func TestValidTarget(t *testing.T) {
 	}
 }
 
+func TestExpandMimics(t *testing.T) {
+	if got, _ := expandMimics("all"); len(got) != 2 || got[0] != "ssh" || got[1] != "tls" {
+		t.Fatalf("all => %v", got)
+	}
+	if got, _ := expandMimics("tls"); len(got) != 1 || got[0] != "tls" {
+		t.Fatalf("tls => %v", got)
+	}
+	if got, _ := expandMimics("ssh,tls"); len(got) != 2 {
+		t.Fatalf("ssh,tls => %v", got)
+	}
+	// Implicit-TLS and STARTTLS mail mimics are all valid selectable types.
+	for _, m := range []string{"smtp", "imap", "smtps", "imaps"} {
+		if got, err := expandMimics(m); err != nil || len(got) != 1 || got[0] != m {
+			t.Fatalf("%s => %v, %v", m, got, err)
+		}
+	}
+	if got, _ := expandMimics("ssh,tls,smtp,imap,smtps,imaps"); len(got) != 6 {
+		t.Fatalf("all-explicit => %v", got)
+	}
+	if _, err := expandMimics("bogus"); err == nil {
+		t.Fatal("bogus mimic should error")
+	}
+}
+
+func TestSpeedProfile(t *testing.T) {
+	hMin, hMax, hBw, _ := speedProfile("high-speed")
+	if hMin <= 10 || hMax <= 20 || hBw <= 8 {
+		t.Fatalf("high-speed too low: %d/%d/%d", hMin, hMax, hBw)
+	}
+	bMin, bMax, bBw, bJit := speedProfile("balanced")
+	if bMin != 10 || bMax != 20 || bBw != 8 || bJit != 2 {
+		t.Fatalf("balanced = %d/%d/%d/%d", bMin, bMax, bBw, bJit)
+	}
+}
+
 func TestValidToken(t *testing.T) {
 	if err := validToken("acb329f4a1e30d0b"); err != nil {
 		t.Errorf("valid hex token rejected: %v", err)

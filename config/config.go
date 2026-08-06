@@ -3,8 +3,11 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // AppConfig represents the root structure of the application configuration
@@ -22,22 +25,45 @@ type AppConfig struct {
 	// DecoyPort is the local port the real sshd was relocated to; unauthorized
 	// probes on the public listen port are proxied here. Default 2022.
 	DecoyPort int `json:"decoy_port,omitempty"`
+	// Mimics lists the camouflage listeners the foreign runs (SSH, TLS, ...). If
+	// empty, a single SSH listener is synthesized from ForeignListenPort/DecoyPort.
+	Mimics []MimicListener `json:"mimics,omitempty"`
 
 	// Iran Node specific properties
 	ForeignNodes []ForeignNode `json:"foreign_nodes,omitempty"`
 }
 
+// MimicListener is one camouflage listener on the foreign node.
+type MimicListener struct {
+	Type       string `json:"type"`                  // "ssh" | "tls" | "smtp" | "imap"
+	Port       int    `json:"port"`                  // public listen port
+	Decoy      string `json:"decoy,omitempty"`       // decoy backend; "" = protocol default
+	ServerName string `json:"server_name,omitempty"` // TLS SNI/CN (optional)
+}
+
+// Endpoint is one way the hub reaches a foreign node (a target port + mimic). A
+// node's endpoints share one SOCKS port and one pool; the dialer spreads pipes
+// across them with a fluctuating mimic distribution.
+type Endpoint struct {
+	Target     string `json:"target"`                // "host:port"
+	Mimic      string `json:"mimic"`                 // "ssh" | "tls" | "smtp" | "imap"
+	ServerName string `json:"server_name,omitempty"` // TLS SNI
+}
+
 // ForeignNode defines the connection parameters for upstream egress servers
 type ForeignNode struct {
-	Alias               string `json:"alias"`
-	TargetIP            string `json:"target_ip"`
-	TargetPort          int    `json:"target_port"`
-	LocalSocksPort      int    `json:"local_socks_port"`
-	MinConnections      int    `json:"min_connections"`       // Establishes the baseline warm-up pool size
-	MaxConnections      int    `json:"max_connections"`       // Dynamically customizes pool sizing per server
-	BandwidthLimitMbps  int    `json:"bandwidth_limit_mbps"`  // Target speed (Mbps) per physical connection before scale-up
-	BandwidthJitterMbps int    `json:"bandwidth_jitter_mbps"` // Variance to evade DPI patterns (Chaos Mesh)
-	AuthToken           string `json:"auth_token"`
+	Alias          string `json:"alias"`
+	TargetIP       string `json:"target_ip"`
+	TargetPort     int    `json:"target_port"`
+	LocalSocksPort int    `json:"local_socks_port"`
+	// Endpoints are the (target, mimic) pairs this one SOCKS port is served by. If
+	// empty, a single SSH endpoint is synthesized from TargetIP/TargetPort.
+	Endpoints           []Endpoint `json:"endpoints,omitempty"`
+	MinConnections      int        `json:"min_connections"`       // Establishes the baseline warm-up pool size
+	MaxConnections      int        `json:"max_connections"`       // Dynamically customizes pool sizing per server
+	BandwidthLimitMbps  int        `json:"bandwidth_limit_mbps"`  // Target speed (Mbps) per physical connection before scale-up
+	BandwidthJitterMbps int        `json:"bandwidth_jitter_mbps"` // Variance to evade DPI patterns (Chaos Mesh)
+	AuthToken           string     `json:"auth_token"`
 }
 
 // getConfigPath determines the storage destination for the configuration.
@@ -68,7 +94,12 @@ func LoadConfig() (*AppConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseConfig(data)
+}
 
+// parseConfig unmarshals config JSON and applies backward-compatible defaults.
+// Separated from disk I/O so it is unit-testable.
+func parseConfig(data []byte) (*AppConfig, error) {
 	var cfg AppConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
@@ -82,9 +113,30 @@ func LoadConfig() (*AppConfig, error) {
 	if cfg.Role == "foreign" && cfg.DecoyPort == 0 {
 		cfg.DecoyPort = 2022 // default decoy sshd port
 	}
+	// Synthesize a single SSH listener from the legacy fields if none configured,
+	// so v0.6 foreign configs keep working unchanged.
+	if cfg.Role == "foreign" && len(cfg.Mimics) == 0 {
+		port := cfg.ForeignListenPort
+		if port == 0 {
+			port = 22
+		}
+		cfg.Mimics = []MimicListener{{
+			Type:  "ssh",
+			Port:  port,
+			Decoy: fmt.Sprintf("127.0.0.1:%d", cfg.DecoyPort),
+		}}
+	}
+
 	for i := range cfg.ForeignNodes {
 		if cfg.ForeignNodes[i].TargetPort == 0 {
 			cfg.ForeignNodes[i].TargetPort = 22 // Default fallback for old configs
+		}
+		// Synthesize a single SSH endpoint from the legacy target if none set.
+		if len(cfg.ForeignNodes[i].Endpoints) == 0 {
+			cfg.ForeignNodes[i].Endpoints = []Endpoint{{
+				Target: net.JoinHostPort(cfg.ForeignNodes[i].TargetIP, strconv.Itoa(cfg.ForeignNodes[i].TargetPort)),
+				Mimic:  "ssh",
+			}}
 		}
 		if cfg.ForeignNodes[i].MinConnections == 0 {
 			cfg.ForeignNodes[i].MinConnections = 10 // Default baseline: 10 connections

@@ -51,10 +51,24 @@ func cmdInstall(args []string) {
 	_ = exec.Command("systemctl", "enable", "hedioum.service").Run()
 	color.Green("[✓] systemd service installed and enabled.")
 
+	enableBBR()
+
 	color.HiWhite("\nNext:")
 	color.HiWhite("  Foreign: hedioum-tunnel setup-foreign [--move-ssh]")
 	color.HiWhite("  Iran:    hedioum-tunnel setup-iran --alias ... --target IP:PORT --socks-port N --token HEX")
 	color.HiWhite("  Then:    systemctl start hedioum.service")
+}
+
+// enableBBR turns on the BBR congestion control + fq qdisc, a large throughput
+// win on high-latency/lossy links. Best-effort; ignored on kernels without BBR.
+func enableBBR() {
+	const conf = "net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n"
+	if err := os.WriteFile("/etc/sysctl.d/99-hedioum-bbr.conf", []byte(conf), 0644); err != nil {
+		return
+	}
+	if err := exec.Command("sysctl", "-p", "/etc/sysctl.d/99-hedioum-bbr.conf").Run(); err == nil {
+		color.Green("[✓] Enabled BBR congestion control (fq qdisc).")
+	}
 }
 
 func copyExecutable(src, dst string) error {

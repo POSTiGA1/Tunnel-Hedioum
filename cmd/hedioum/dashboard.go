@@ -12,6 +12,7 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/egress"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/ingress"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
 
 // --- INTERACTIVE OPERATIONS DASHBOARD ---
@@ -33,6 +34,8 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 			options = append(options,
 				"3. Add New Foreign Egress Node",
 				"4. Remove Existing Egress Node",
+				"5. Run Speedtest to a Node",
+				"6. Probe Endpoints (per-mimic reachability)",
 			)
 		} else {
 			options = append(options, "3. Rotate Authentication Token")
@@ -66,10 +69,17 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 					color.HiCyan("\n=== [ Active Mesh Topologies & Live Stats ] ===")
 					for _, n := range cfg.ForeignNodes {
 						fmt.Printf("\n 🟢 Target Alias : %s\n", color.HiWhiteString(n.Alias))
-						fmt.Printf(" ├─ Egress IP    : %s:%d\n", color.HiYellowString(n.TargetIP), n.TargetPort)
 						fmt.Printf(" ├─ Local SOCKS5 : 127.0.0.1:%d\n", n.LocalSocksPort)
 						fmt.Printf(" ├─ Pool Sizing  : %d (Warm-up) to %d (Max Peak) Connections\n", n.MinConnections, n.MaxConnections)
-						fmt.Printf(" └─ DPI Evasion  : Floating Cap %d Mbps (±%d Mbps Jitter)\n", n.BandwidthLimitMbps, n.BandwidthJitterMbps)
+						fmt.Printf(" ├─ DPI Evasion  : Floating Cap %d Mbps (±%d Mbps Jitter)\n", n.BandwidthLimitMbps, n.BandwidthJitterMbps)
+						fmt.Printf(" └─ Endpoints    : %d mimic(s)\n", len(n.Endpoints))
+						for i, ep := range n.Endpoints {
+							branch := "    ├─"
+							if i == len(n.Endpoints)-1 {
+								branch = "    └─"
+							}
+							fmt.Printf("%s %-6s → %s\n", branch, color.HiCyanString(ep.Mimic), color.HiYellowString(ep.Target))
+						}
 					}
 					color.Yellow("\n[*] Note: To view real-time Mbps and connection scale events, use Option 2 (Journalctl).")
 					color.Yellow("    (Live RPC Dashboard memory-link is slated for the next release).")
@@ -107,6 +117,12 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 			if cfg.RemoveForeignNode(selected) {
 				saveAndRestart(cfg)
 			}
+
+		case strings.Contains(action, "Run Speedtest"):
+			runSpeedtestMenu(cfg)
+
+		case strings.Contains(action, "Probe Endpoints"):
+			runProbeMenu(cfg)
 
 		case strings.Contains(action, "Rotate Authentication Token"):
 			cfg.AuthToken = sysutil.GenerateSecureToken()
@@ -147,6 +163,61 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 
 		// Print a clean separator before the menu loops again
 		fmt.Println(strings.Repeat("-", 60))
+	}
+}
+
+// pickNode prompts for a node alias (auto-selects when only one exists). Returns
+// false if there are no nodes.
+func pickNode(cfg *config.AppConfig, prompt string) (config.ForeignNode, bool) {
+	if len(cfg.ForeignNodes) == 0 {
+		color.Yellow("\n[!] No egress nodes configured. Use Option 3 to add one.")
+		return config.ForeignNode{}, false
+	}
+	if len(cfg.ForeignNodes) == 1 {
+		return cfg.ForeignNodes[0], true
+	}
+	var aliases []string
+	for _, n := range cfg.ForeignNodes {
+		aliases = append(aliases, n.Alias)
+	}
+	var selected string
+	survey.AskOne(&survey.Select{Message: prompt, Options: aliases}, &selected)
+	for _, n := range cfg.ForeignNodes {
+		if n.Alias == selected {
+			return n, true
+		}
+	}
+	return config.ForeignNode{}, false
+}
+
+// runSpeedtestMenu runs an un-shaped throughput test to a chosen node from the TUI.
+func runSpeedtestMenu(cfg *config.AppConfig) {
+	node, ok := pickNode(cfg, "Speedtest which node?")
+	if !ok {
+		return
+	}
+	ep := node.Endpoints[0] // first endpoint; CLI `speedtest --mimic` targets a specific one
+	color.HiCyan("\n[*] Speedtest to %q via %s@%s (8s/direction)...", node.Alias, ep.Mimic, ep.Target)
+	down, err := runSpeedtest(ep, node.AuthToken, tunproto.SpeedDown, 8)
+	report("download", down, err)
+	up, err := runSpeedtest(ep, node.AuthToken, tunproto.SpeedUp, 8)
+	report("upload", up, err)
+}
+
+// runProbeMenu tests every endpoint of a chosen node and reports reachability.
+func runProbeMenu(cfg *config.AppConfig) {
+	node, ok := pickNode(cfg, "Probe which node?")
+	if !ok {
+		return
+	}
+	fmt.Printf("\nNode %q (%d endpoints):\n", node.Alias, len(node.Endpoints))
+	for _, ep := range node.Endpoints {
+		rtt, err := ingress.ProbeEndpoint(ep, node.AuthToken)
+		if err != nil {
+			color.Red("  ✗ %-6s %-24s FAIL: %v", ep.Mimic, ep.Target, err)
+		} else {
+			color.Green("  ✓ %-6s %-24s OK  (%.0f ms)", ep.Mimic, ep.Target, float64(rtt.Microseconds())/1000)
+		}
 	}
 }
 

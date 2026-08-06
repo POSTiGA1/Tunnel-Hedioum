@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/mimic"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/securestream"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tlscert"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
 
@@ -25,16 +27,17 @@ const (
 	egressDual = "dual"
 )
 
-// Egress policy, set once at StartForeignDaemon. Defaults are IPv4-only egress
-// (so a misconfiguration can never leak the server's IPv6 identity) and the
-// conventional decoy sshd port 2022.
+const tlsCertDir = "/etc/hedioum/tls"
+
+// Egress dial policy, set once at StartForeignDaemon. Default is IPv4-only egress
+// so a misconfiguration can never leak the server's IPv6 identity.
 var (
 	egressMode   = egressIPv4
 	egressBindIP net.IP // optional source IP to bind
-	decoyAddr    = "127.0.0.1:2022"
 )
 
-// StartForeignDaemon boots up the egress networking processes on the foreign server.
+// StartForeignDaemon boots the egress: one camouflage listener per configured
+// mimic (SSH, TLS, ...), all feeding the same tunnel core.
 func StartForeignDaemon(cfg *config.AppConfig) {
 	// Apply the egress dial policy (how we reach the open internet).
 	if cfg.EgressIPMode != "" {
@@ -43,43 +46,89 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 	if cfg.EgressBindIP != "" {
 		egressBindIP = net.ParseIP(cfg.EgressBindIP)
 	}
-	if cfg.DecoyPort != 0 {
-		decoyAddr = fmt.Sprintf("127.0.0.1:%d", cfg.DecoyPort)
-	}
+	slog.Info("egress starting", "egress_mode", egressMode, "mimics", len(cfg.Mimics))
 
-	// Dynamically bind to the configured port or fallback to 22
-	listenPort := 22
-	if cfg.ForeignListenPort != 0 {
-		listenPort = cfg.ForeignListenPort
-	}
-	// Dual-stack listen (":port") so an Iran hub can reach us over IPv4 or IPv6.
-	listenAddr := fmt.Sprintf(":%d", listenPort)
+	// One replay filter is shared across listeners (SSH salts and TLS nonces are
+	// distinct high-entropy values).
+	replayFilter := securestream.NewReplayFilter(0)
 
-	listener, err := net.Listen("tcp", listenAddr)
+	for _, ml := range cfg.Mimics {
+		go startMimicListener(cfg, ml, replayFilter)
+	}
+	select {} // block forever
+}
+
+// startMimicListener binds one port and serves it with the given mimic.
+func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) {
+	m, err := buildServerMimic(cfg, ml, filter)
 	if err != nil {
-		slog.Error("failed to bind egress daemon", "addr", listenAddr, "port", listenPort, "err", err)
+		slog.Error("failed to build mimic", "type", ml.Type, "err", err)
 		return
 	}
 
-	slog.Info("egress daemon listening", "addr", listenAddr, "egress_mode", egressMode)
-	slog.Info("decoy target set", "decoy", decoyAddr)
-
-	// Mirror the real sshd banner so a genuine SSH client (password or key) routed
-	// to the decoy still completes key exchange on the public port. Kept fresh so
-	// it survives boot races (sshd not up yet) and sshd upgrades.
-	banner := newDecoyBannerMirror(decoyAddr)
-
-	// Bounded, TTL'd replay protection for the authentication handshake.
-	replayFilter := securestream.NewReplayFilter(0)
+	// Dual-stack listen (":port") so an Iran hub can reach us over IPv4 or IPv6.
+	listenAddr := fmt.Sprintf(":%d", ml.Port)
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		slog.Error("failed to bind mimic listener", "type", ml.Type, "addr", listenAddr, "err", err)
+		return
+	}
+	slog.Info("mimic listener active", "type", ml.Type, "addr", listenAddr)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			continue
 		}
-
-		go handleIncomingConnection(conn, cfg.AuthToken, replayFilter, banner.get())
+		go handleIncomingConnection(conn, m)
 	}
+}
+
+// buildServerMimic constructs the server-side camouflage for a listener.
+func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) (mimic.ServerMimic, error) {
+	switch ml.Type {
+	case "tls", "smtps", "imaps":
+		// Implicit TLS: the wire is TLS from the first byte (like HTTPS/IMAPS/SMTPS).
+		// smtps/imaps are the same mimic as tls, just on their conventional ports.
+		return buildServerTLS(cfg, ml, filter)
+	case "smtp", "imap":
+		// STARTTLS: a plaintext mail-protocol prologue upgrades to the same TLS
+		// mimic, so the wire looks like a mail server negotiating STARTTLS.
+		tlsMimic, err := buildServerTLS(cfg, ml, filter)
+		if err != nil {
+			return nil, err
+		}
+		return &mimic.StartTLSMimic{Proto: ml.Type, TLS: tlsMimic}, nil
+	default: // "ssh"
+		decoy := ml.Decoy
+		if decoy == "" {
+			decoy = fmt.Sprintf("127.0.0.1:%d", cfg.DecoyPort)
+		}
+		// Mirror the real sshd banner so a genuine SSH client routed to the decoy
+		// completes key exchange; kept fresh across boot races / sshd upgrades.
+		banner := newDecoyBannerMirror(decoy)
+		return &mimic.SSHMimic{Token: cfg.AuthToken, Filter: filter, DecoyAddr: decoy, Banner: banner.get}, nil
+	}
+}
+
+// buildServerTLS constructs a TLS mimic (self-signed cert + channel-bound auth),
+// reused directly for the "tls" listener and under the STARTTLS mail mimics.
+func buildServerTLS(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) (*mimic.TLSMimic, error) {
+	cert, err := tlscert.LoadOrCreate(tlsCertDir, ml.ServerName)
+	if err != nil {
+		return nil, err
+	}
+	fp, err := tlscert.LeafFingerprint(&cert)
+	if err != nil {
+		return nil, err
+	}
+	return &mimic.TLSMimic{
+		Token:     cfg.AuthToken,
+		Filter:    filter,
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+		CertFP:    fp,
+		DecoyAddr: ml.Decoy, // "" -> built-in web page
+	}, nil
 }
 
 // decoyBannerMirror holds the real sshd banner and keeps it up to date. SSH binds
@@ -130,22 +179,22 @@ func (m *decoyBannerMirror) refreshLoop(addr string) {
 	}
 }
 
-// handleIncomingConnection authenticates the peer over the encrypted handshake,
-// diverts unauthorized probes to the decoy, or establishes the Yamux tunnel.
-func handleIncomingConnection(conn net.Conn, expectedToken string, filter *securestream.ReplayFilter, serverBanner string) {
+// handleIncomingConnection runs the mimic handshake, diverts unauthorized probes
+// to the mimic's decoy, or establishes the Yamux tunnel.
+func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic) {
 	clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 
-	// 1. Exchange banners + authenticate over the encrypted transport. On failure
-	// we receive a ReplayConn carrying the exact bytes the peer sent.
-	secureConn, replayConn, err := mimic.PerformServerHandshake(conn, expectedToken, filter, serverBanner)
+	// 1. Camouflage + authenticate. On failure we receive a replay conn carrying
+	// the exact bytes the peer sent, to forward to the decoy backend.
+	secureConn, replayConn, err := m.Accept(conn)
 	if err != nil {
-		// A wrong PSK, a replayed handshake, or a probe that is not speaking our
-		// protocol. Route it to the real OpenSSH decoy so the server is
-		// indistinguishable from an ordinary SSH host (no ban, uniform behavior).
+		// A wrong credential, a replayed handshake, or a probe not speaking our
+		// protocol. Route it to the decoy so the port looks like a real service
+		// (no ban, uniform behavior).
 		if errors.Is(err, securestream.ErrAuth) {
-			slog.Debug("unauthorized/replayed probe; routing to decoy", "client_ip", clientIP)
+			slog.Debug("unauthorized/replayed probe; routing to decoy", "client_ip", clientIP, "mimic", m.Name())
 		}
-		go proxyToDecoy(replayConn)
+		go m.ProxyDecoy(replayConn)
 		return
 	}
 
@@ -161,42 +210,10 @@ func handleIncomingConnection(conn net.Conn, expectedToken string, filter *secur
 		return
 	}
 
-	slog.Info("authentic hub connection established", "client_ip", clientIP)
+	slog.Info("authentic hub connection established", "client_ip", clientIP, "mimic", m.Name())
 
 	// 3. Accept logical streams from the Hub and route them to the open internet
 	go handleYamuxSession(session)
-}
-
-// proxyToDecoy silently bridges unauthorized connections to the local OpenSSH daemon.
-func proxyToDecoy(clientConn net.Conn) {
-	defer clientConn.Close()
-
-	// Dial the real SSH daemon we moved to port 2022
-	decoyConn, err := net.DialTimeout("tcp", decoyAddr, 5*time.Second)
-	if err != nil {
-		return
-	}
-	defer decoyConn.Close()
-
-	// --- DECOY BANNER CONSUMPTION ---
-	// The client has already received a fake SSH banner from our mimic handshake.
-	// The real SSH daemon (Decoy) will also send its own banner as soon as we connect.
-	// If we pipe immediately, the client gets TWO banners and crashes with "Bad packet length".
-	// Therefore, we must silently consume and discard the decoy's banner first.
-	_ = mimic.ConsumeDecoyServerBanner(decoyConn)
-
-	// Pipe traffic bidirectionally so the scanner interacts with real SSH
-	errChan := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(decoyConn, clientConn)
-		errChan <- err
-	}()
-	go func() {
-		_, err := io.Copy(clientConn, decoyConn)
-		errChan <- err
-	}()
-
-	<-errChan
 }
 
 // handleYamuxSession accepts individual user streams multiplexed over the single physical link.
@@ -227,6 +244,8 @@ func handleLogicalStream(stream net.Conn) {
 		handleTCPStream(stream)
 	case tunproto.StreamUDP:
 		handleUDPStream(stream)
+	case tunproto.StreamSpeedtest:
+		handleSpeedtestStream(stream)
 	default:
 		// Unknown stream type: drop.
 	}

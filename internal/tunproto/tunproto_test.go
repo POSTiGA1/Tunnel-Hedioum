@@ -139,6 +139,24 @@ func TestSocksUDPHeaderRejectsFragment(t *testing.T) {
 	}
 }
 
+func TestSpeedtestHeader(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteSpeedtestHeader(&buf, SpeedDown, 15); err != nil {
+		t.Fatal(err)
+	}
+	typ, err := ReadStreamType(&buf)
+	if err != nil || typ != StreamSpeedtest {
+		t.Fatalf("type = %#x err = %v", typ, err)
+	}
+	dir, seconds, err := ReadSpeedtestHeader(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != SpeedDown || seconds != 15 {
+		t.Fatalf("dir=%#x seconds=%d", dir, seconds)
+	}
+}
+
 func TestDecodeAddrErrors(t *testing.T) {
 	if _, _, err := decodeAddr([]byte{0x09, 1, 2, 3}); err != errBadAtyp {
 		t.Fatalf("unknown ATYP: err = %v", err)
