@@ -42,8 +42,8 @@ func TestValidTarget(t *testing.T) {
 }
 
 func TestExpandMimics(t *testing.T) {
-	if got, _ := expandMimics("all"); len(got) != 2 || got[0] != "ssh" || got[1] != "tls" {
-		t.Fatalf("all => %v", got)
+	if got, _ := expandMimics("all"); len(got) != 6 || got[0] != "ssh" || got[5] != "imaps" {
+		t.Fatalf("all => %v (want all 6 mimics)", got)
 	}
 	if got, _ := expandMimics("tls"); len(got) != 1 || got[0] != "tls" {
 		t.Fatalf("tls => %v", got)
