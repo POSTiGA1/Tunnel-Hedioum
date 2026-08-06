@@ -14,9 +14,12 @@ import (
 )
 
 // expandMimics turns "all" or a comma list into an ordered, validated mimic list.
+// "all" means the whole arsenal — the same as the interactive wizard's "all"
+// checkbox, so CLI and wizard agree (a mismatch left the two ends of a link on
+// different mimic sets).
 func expandMimics(spec string) ([]string, error) {
 	if spec == "all" {
-		return []string{"ssh", "tls"}, nil
+		return []string{"ssh", "tls", "smtp", "imap", "smtps", "imaps"}, nil
 	}
 	var out []string
 	for _, p := range strings.Split(spec, ",") {
@@ -141,6 +144,9 @@ func cmdSetupForeign(args []string) {
 	}
 	color.Green("[✓] Foreign config written (mimics: %s, egress %s).", strings.Join(types, ","), *egressMode)
 	fmt.Printf("Auth Token: %s\n", tok)
+	// Apply immediately: without a restart the daemon keeps its old config (old
+	// mimics AND old token), which silently breaks the link after re-provisioning.
+	restartDaemon()
 }
 
 // cmdSetupIran writes the Iran (hub) config with its first node.
