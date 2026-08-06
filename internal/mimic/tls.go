@@ -50,12 +50,12 @@ func (m *TLSMimic) Accept(conn net.Conn) (net.Conn, net.Conn, error) {
 func (m *TLSMimic) ProxyDecoy(replay net.Conn) {
 	defer replay.Close()
 	if m.DecoyAddr == "" {
-		serveBuiltinWeb(replay)
+		ServeWebDecoy(replay)
 		return
 	}
 	backend, err := net.DialTimeout("tcp", m.DecoyAddr, 5*time.Second)
 	if err != nil {
-		serveBuiltinWeb(replay) // backend down: still answer plausibly
+		ServeWebDecoy(replay) // backend down: still answer plausibly
 		return
 	}
 	defer backend.Close()
@@ -66,17 +66,6 @@ func (m *TLSMimic) ProxyDecoy(replay net.Conn) {
 }
 
 func (m *TLSMimic) Name() string { return "tls" }
-
-// serveBuiltinWeb answers a plausible HTTP response so an unauthenticated peer
-// sees an ordinary web server.
-func serveBuiltinWeb(conn net.Conn) {
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, _ = conn.Read(make([]byte, 4096)) // consume (part of) the request
-	const body = "<!doctype html><html><head><title>Welcome</title></head><body><h1>It works!</h1></body></html>"
-	resp := fmt.Sprintf("HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: text/html\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
-	_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	_, _ = conn.Write([]byte(resp))
-}
 
 // TLSClient is the client side of the TLS mimic. It uses uTLS to present a real
 // browser's ClientHello (defeating JA3 fingerprinting) and pins the server cert

@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
-	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/egress"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/ingress"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
@@ -95,8 +95,8 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 			}
 
 		case strings.Contains(action, "View Real-time Logs"):
-			color.Cyan("\n[*] Tailing logs. Press Ctrl+C to return to dashboard.\n")
-			runSystemCmd("journalctl", "-u", "hedioum.service", "-f", "-n", "30")
+			color.Cyan("\n[*] Tailing logs. Press Ctrl+C to return to the dashboard.\n")
+			runInterruptible("journalctl", "-u", "hedioum.service", "-f", "-n", "30")
 
 		case strings.Contains(action, "Add New Foreign Egress Node"):
 			setupIranNode(cfg, false)
@@ -149,11 +149,13 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 			}
 
 		case strings.Contains(action, "Start Daemon Foreground"):
-			color.Magenta("\n[*] Bootstrapping Daemon in foreground. Ctrl+C to abort.")
-			if cfg.Role == "foreign" {
-				egress.StartForeignDaemon(cfg)
+			color.Magenta("\n[*] Running daemon in foreground (debug). Press Ctrl+C to stop and return to the menu.\n")
+			if self, err := os.Executable(); err != nil {
+				color.Red("[x] Cannot locate the binary: %v", err)
 			} else {
-				ingress.StartIranHub(cfg)
+				// Run as a subprocess so Ctrl+C stops just the daemon (releasing its
+				// ports) and returns here, instead of killing the dashboard.
+				runInterruptible(self, "--foreground")
 			}
 
 		case strings.Contains(action, "Exit"):
@@ -246,4 +248,33 @@ func runSystemCmd(name string, arg ...string) {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	_ = cmd.Run()
+}
+
+// runInterruptible runs a long-lived, terminal-attached command (a log tail, the
+// foreground daemon) but treats Ctrl+C as "stop this command and return to the
+// menu" rather than "quit the dashboard". While the child runs we catch SIGINT in
+// this process so the parent survives; the child, whose SIGINT disposition resets
+// to the default on exec, still receives Ctrl+C from the terminal and exits.
+func runInterruptible(name string, arg ...string) {
+	cmd := exec.Command(name, arg...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-sig: // absorb Ctrl+C here; the child handles it and exits
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	_ = cmd.Run()
+	close(done)
+	signal.Stop(sig)
 }

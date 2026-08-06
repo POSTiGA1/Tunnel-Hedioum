@@ -25,6 +25,10 @@ type AppConfig struct {
 	// DecoyPort is the local port the real sshd was relocated to; unauthorized
 	// probes on the public listen port are proxied here. Default 2022.
 	DecoyPort int `json:"decoy_port,omitempty"`
+	// HTTPDecoyPort serves a plaintext Apache "It works" page so the server looks
+	// like an ordinary web host to IP-reputation scanners. Default 80; a negative
+	// value disables it.
+	HTTPDecoyPort int `json:"http_decoy_port,omitempty"`
 	// Mimics lists the camouflage listeners the foreign runs (SSH, TLS, ...). If
 	// empty, a single SSH listener is synthesized from ForeignListenPort/DecoyPort.
 	Mimics []MimicListener `json:"mimics,omitempty"`
@@ -112,6 +116,9 @@ func parseConfig(data []byte) (*AppConfig, error) {
 	}
 	if cfg.Role == "foreign" && cfg.DecoyPort == 0 {
 		cfg.DecoyPort = 2022 // default decoy sshd port
+	}
+	if cfg.Role == "foreign" && cfg.HTTPDecoyPort == 0 {
+		cfg.HTTPDecoyPort = 80 // default: serve an Apache decoy on :80 (negative = off)
 	}
 	// Synthesize a single SSH listener from the legacy fields if none configured,
 	// so v0.6 foreign configs keep working unchanged.

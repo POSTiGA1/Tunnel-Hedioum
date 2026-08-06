@@ -60,6 +60,7 @@ func cmdSetupForeign(args []string) {
 	egressMode := fs.String("egress-mode", "ipv4", "egress family: ipv4|ipv6|dual")
 	bindIP := fs.String("egress-bind-ip", "", "optional egress source IP")
 	moveSSH := fs.Bool("move-ssh", false, "relocate OpenSSH to --decoy-port")
+	httpDecoyPort := fs.Int("http-decoy-port", 80, "plaintext Apache decoy port (0 to disable)")
 	token := fs.String("token", "", "auth token (generated if empty)")
 	_ = fs.Parse(args)
 
@@ -117,10 +118,19 @@ func cmdSetupForeign(args []string) {
 		}
 	}
 
+	// -1 sentinel disables the decoy (config 0 would be re-defaulted to 80 on load).
+	httpDecoy := *httpDecoyPort
+	if httpDecoy == 0 {
+		httpDecoy = -1
+	} else if err := validPort(httpDecoy); err != nil {
+		fail("--http-decoy-port: %v", err)
+	}
+
 	cfg := &config.AppConfig{
 		Role:              "foreign",
 		ForeignListenPort: *sshPort,
 		DecoyPort:         *decoyPort,
+		HTTPDecoyPort:     httpDecoy,
 		EgressIPMode:      *egressMode,
 		EgressBindIP:      *bindIP,
 		AuthToken:         tok,

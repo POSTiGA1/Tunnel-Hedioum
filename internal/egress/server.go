@@ -55,7 +55,37 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 	for _, ml := range cfg.Mimics {
 		go startMimicListener(cfg, ml, replayFilter)
 	}
+
+	// Optional plaintext HTTP decoy: makes the box look like an ordinary Apache
+	// web host to IP-reputation scanners hitting :80 (does nothing else).
+	if cfg.HTTPDecoyPort > 0 {
+		go startHTTPDecoy(cfg.HTTPDecoyPort)
+	}
+
 	select {} // block forever
+}
+
+// startHTTPDecoy binds a plaintext port (default 80) and answers every connection
+// with the Apache2 Ubuntu default page — pure camouflage, no tunnel.
+func startHTTPDecoy(port int) {
+	listenAddr := fmt.Sprintf(":%d", port)
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		// Something already owns :80 (a real web server) — that is fine, leave it be.
+		slog.Warn("HTTP decoy not started", "addr", listenAddr, "err", err)
+		return
+	}
+	slog.Info("HTTP decoy active", "addr", listenAddr)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			continue
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			mimic.ServeWebDecoy(c)
+		}(conn)
+	}
 }
 
 // startMimicListener binds one port and serves it with the given mimic.
@@ -80,7 +110,7 @@ func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *
 		if err != nil {
 			continue
 		}
-		go handleIncomingConnection(conn, m)
+		go handleIncomingConnection(conn, m, ml.Type)
 	}
 }
 
@@ -181,7 +211,10 @@ func (m *decoyBannerMirror) refreshLoop(addr string) {
 
 // handleIncomingConnection runs the mimic handshake, diverts unauthorized probes
 // to the mimic's decoy, or establishes the Yamux tunnel.
-func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic) {
+// label is the configured listener type (ssh/tls/smtp/imap/smtps/imaps); it is
+// used for logging so implicit-TLS variants are distinguished from plain tls,
+// which share the same underlying mimic and Name().
+func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic, label string) {
 	clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 
 	// 1. Camouflage + authenticate. On failure we receive a replay conn carrying
@@ -192,7 +225,7 @@ func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic) {
 		// protocol. Route it to the decoy so the port looks like a real service
 		// (no ban, uniform behavior).
 		if errors.Is(err, securestream.ErrAuth) {
-			slog.Debug("unauthorized/replayed probe; routing to decoy", "client_ip", clientIP, "mimic", m.Name())
+			slog.Debug("unauthorized/replayed probe; routing to decoy", "client_ip", clientIP, "mimic", label)
 		}
 		go m.ProxyDecoy(replayConn)
 		return
@@ -210,7 +243,7 @@ func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic) {
 		return
 	}
 
-	slog.Info("authentic hub connection established", "client_ip", clientIP, "mimic", m.Name())
+	slog.Info("authentic hub connection established", "client_ip", clientIP, "mimic", label)
 
 	// 3. Accept logical streams from the Hub and route them to the open internet
 	go handleYamuxSession(session)

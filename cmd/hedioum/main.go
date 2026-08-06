@@ -23,7 +23,7 @@ import (
 // so v0.5 and v0.6 nodes interoperate): structured slog logging, non-interactive
 // CLI + self-install, configurable decoy/listen ports, buffered banner reads, and
 // a ghp.ci-free, signature-free-but-robust self-update.
-const AppVersion = "v0.7.0"
+const AppVersion = "v0.7.1"
 
 func main() {
 	// Management subcommands (a non-flag first argument): install, setup-*, etc.
@@ -36,10 +36,23 @@ func main() {
 
 	resetCfg := flag.Bool("reset", false, "Wipe the current configuration database and restart the setup wizard")
 	openFW := flag.Bool("open-firewall", false, "Open the tunnel's listen port on the host firewall and exit (run privileged, e.g. from systemd ExecStartPre=+)")
+	foreground := flag.Bool("foreground", false, "Run the daemon in the foreground with logs on stdout (used by the dashboard's Debug mode)")
 	flag.Parse()
 
 	if *openFW {
 		handleOpenFirewall()
+		return
+	}
+
+	// Foreground daemon: run the role's daemon with logs on stdout and block. The
+	// dashboard's Debug option launches this as a subprocess so Ctrl+C stops just
+	// the daemon and returns to the menu (see runInterruptible).
+	if *foreground {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			fail("no configuration to run: %v", err)
+		}
+		runDaemon(cfg)
 		return
 	}
 
@@ -51,15 +64,24 @@ func main() {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		isFirstLaunch = true
-		// No config means first launch. Force terminal wizard regardless of environment.
+		// The setup wizard needs an interactive terminal. When stdin is not a TTY
+		// (the installer's trailing `exec hedioum-tunnel` over a pipe/EOF, or a
+		// systemd start with no config), running the wizard would EOF every prompt,
+		// persist a bogus config, and then block. Print the non-interactive setup
+		// hint and exit cleanly — the binary is installed; the operator runs setup-*.
+		if !isTerminal(os.Stdin) {
+			printHeader()
+			color.Yellow("[!] No configuration found and no interactive terminal detected.")
+			printSetupHint()
+			return
+		}
 		printHeader()
 		color.Yellow("[!] Initializing Setup Wizard for fresh installation...\n")
 		cfg = runSetupWizard()
 	}
 
 	// Detect execution context: Human (Terminal) vs Systemd (Daemon)
-	fileInfo, _ := os.Stdout.Stat()
-	isInteractive := (fileInfo.Mode() & os.ModeCharDevice) != 0
+	isInteractive := isTerminal(os.Stdout)
 
 	if isInteractive {
 		if isFirstLaunch {
@@ -74,18 +96,25 @@ func main() {
 		}
 		runInteractiveDashboard(cfg)
 	} else {
-		// Headless Daemon Execution (Systemd): structured logs to journald.
-		logging.Init(false) // level via HEDIOUM_LOG_LEVEL (debug|info|warn|error)
-		slog.Info("hedioum daemon starting", "version", AppVersion, "role", cfg.Role)
-		if cfg.Role == "foreign" {
-			egress.StartForeignDaemon(cfg)
-		} else if cfg.Role == "iran" {
-			ingress.StartIranHub(cfg)
-		} else {
-			// Fail securely if role is corrupted or undefined
-			slog.Error("undefined role in config; refusing to start", "role", cfg.Role)
-			os.Exit(1)
-		}
+		// Headless daemon (systemd): structured logs to journald.
+		runDaemon(cfg)
+	}
+}
+
+// runDaemon starts the role's networking daemon and blocks. Shared by the headless
+// systemd path and the --foreground debug mode.
+func runDaemon(cfg *config.AppConfig) {
+	logging.Init(false) // level via HEDIOUM_LOG_LEVEL (debug|info|warn|error)
+	slog.Info("hedioum daemon starting", "version", AppVersion, "role", cfg.Role)
+	switch cfg.Role {
+	case "foreign":
+		egress.StartForeignDaemon(cfg)
+	case "iran":
+		ingress.StartIranHub(cfg)
+	default:
+		// Fail securely if role is corrupted or undefined.
+		slog.Error("undefined role in config; refusing to start", "role", cfg.Role)
+		os.Exit(1)
 	}
 }
 
@@ -135,7 +164,31 @@ func firewallPorts(cfg *config.AppConfig) []int {
 		}
 		ports = append(ports, port)
 	}
+	// The plaintext HTTP (Apache) decoy port, when enabled.
+	if cfg.HTTPDecoyPort > 0 {
+		ports = append(ports, cfg.HTTPDecoyPort)
+	}
 	return ports
+}
+
+// isTerminal reports whether f is attached to an interactive character device
+// (a TTY) rather than a pipe, file, or /dev/null.
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// printSetupHint prints the non-interactive configuration commands, shown when the
+// binary is launched with no config on a non-interactive stdin.
+func printSetupHint() {
+	color.HiWhite("\nConfigure non-interactively, then start the service:")
+	color.HiWhite("  Foreign: hedioum-tunnel setup-foreign --mimics all --move-ssh")
+	color.HiWhite("  Iran:    hedioum-tunnel setup-iran --alias NAME --target-ip IP --mimics all --socks-port N --token HEX")
+	color.HiWhite("  Then:    systemctl start hedioum.service")
+	color.HiBlack("  (Or run 'hedioum-tunnel' on an interactive terminal for the guided wizard.)")
 }
 
 func printHeader() {
