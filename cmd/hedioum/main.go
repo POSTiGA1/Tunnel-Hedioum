@@ -51,15 +51,24 @@ func main() {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		isFirstLaunch = true
-		// No config means first launch. Force terminal wizard regardless of environment.
+		// The setup wizard needs an interactive terminal. When stdin is not a TTY
+		// (the installer's trailing `exec hedioum-tunnel` over a pipe/EOF, or a
+		// systemd start with no config), running the wizard would EOF every prompt,
+		// persist a bogus config, and then block. Print the non-interactive setup
+		// hint and exit cleanly — the binary is installed; the operator runs setup-*.
+		if !isTerminal(os.Stdin) {
+			printHeader()
+			color.Yellow("[!] No configuration found and no interactive terminal detected.")
+			printSetupHint()
+			return
+		}
 		printHeader()
 		color.Yellow("[!] Initializing Setup Wizard for fresh installation...\n")
 		cfg = runSetupWizard()
 	}
 
 	// Detect execution context: Human (Terminal) vs Systemd (Daemon)
-	fileInfo, _ := os.Stdout.Stat()
-	isInteractive := (fileInfo.Mode() & os.ModeCharDevice) != 0
+	isInteractive := isTerminal(os.Stdout)
 
 	if isInteractive {
 		if isFirstLaunch {
@@ -136,6 +145,26 @@ func firewallPorts(cfg *config.AppConfig) []int {
 		ports = append(ports, port)
 	}
 	return ports
+}
+
+// isTerminal reports whether f is attached to an interactive character device
+// (a TTY) rather than a pipe, file, or /dev/null.
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// printSetupHint prints the non-interactive configuration commands, shown when the
+// binary is launched with no config on a non-interactive stdin.
+func printSetupHint() {
+	color.HiWhite("\nConfigure non-interactively, then start the service:")
+	color.HiWhite("  Foreign: hedioum-tunnel setup-foreign --mimics all --move-ssh")
+	color.HiWhite("  Iran:    hedioum-tunnel setup-iran --alias NAME --target-ip IP --mimics all --socks-port N --token HEX")
+	color.HiWhite("  Then:    systemctl start hedioum.service")
+	color.HiBlack("  (Or run 'hedioum-tunnel' on an interactive terminal for the guided wizard.)")
 }
 
 func printHeader() {

@@ -80,7 +80,7 @@ func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *
 		if err != nil {
 			continue
 		}
-		go handleIncomingConnection(conn, m)
+		go handleIncomingConnection(conn, m, ml.Type)
 	}
 }
 
@@ -181,7 +181,10 @@ func (m *decoyBannerMirror) refreshLoop(addr string) {
 
 // handleIncomingConnection runs the mimic handshake, diverts unauthorized probes
 // to the mimic's decoy, or establishes the Yamux tunnel.
-func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic) {
+// label is the configured listener type (ssh/tls/smtp/imap/smtps/imaps); it is
+// used for logging so implicit-TLS variants are distinguished from plain tls,
+// which share the same underlying mimic and Name().
+func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic, label string) {
 	clientIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
 
 	// 1. Camouflage + authenticate. On failure we receive a replay conn carrying
@@ -192,7 +195,7 @@ func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic) {
 		// protocol. Route it to the decoy so the port looks like a real service
 		// (no ban, uniform behavior).
 		if errors.Is(err, securestream.ErrAuth) {
-			slog.Debug("unauthorized/replayed probe; routing to decoy", "client_ip", clientIP, "mimic", m.Name())
+			slog.Debug("unauthorized/replayed probe; routing to decoy", "client_ip", clientIP, "mimic", label)
 		}
 		go m.ProxyDecoy(replayConn)
 		return
@@ -210,7 +213,7 @@ func handleIncomingConnection(conn net.Conn, m mimic.ServerMimic) {
 		return
 	}
 
-	slog.Info("authentic hub connection established", "client_ip", clientIP, "mimic", m.Name())
+	slog.Info("authentic hub connection established", "client_ip", clientIP, "mimic", label)
 
 	// 3. Accept logical streams from the Hub and route them to the open internet
 	go handleYamuxSession(session)

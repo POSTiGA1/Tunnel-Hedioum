@@ -51,3 +51,36 @@ func TestForeignDefaults(t *testing.T) {
 		t.Fatalf("defaults: mode=%q decoy=%d", cfg.EgressIPMode, cfg.DecoyPort)
 	}
 }
+
+func TestUpdateForeignNode(t *testing.T) {
+	cfg := &AppConfig{Role: "iran"}
+	// Append when absent.
+	cfg.UpdateForeignNode(ForeignNode{Alias: "a", LocalSocksPort: 40001})
+	cfg.UpdateForeignNode(ForeignNode{Alias: "b", LocalSocksPort: 40002})
+	if len(cfg.ForeignNodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(cfg.ForeignNodes))
+	}
+	// Update in place (same alias) must not append.
+	cfg.UpdateForeignNode(ForeignNode{Alias: "a", LocalSocksPort: 49999})
+	if len(cfg.ForeignNodes) != 2 {
+		t.Fatalf("update should not append; got %d nodes", len(cfg.ForeignNodes))
+	}
+	for _, n := range cfg.ForeignNodes {
+		if n.Alias == "a" && n.LocalSocksPort != 49999 {
+			t.Fatalf("node a not updated: port=%d", n.LocalSocksPort)
+		}
+	}
+}
+
+func TestRemoveForeignNode(t *testing.T) {
+	cfg := &AppConfig{ForeignNodes: []ForeignNode{{Alias: "a"}, {Alias: "b"}, {Alias: "c"}}}
+	if !cfg.RemoveForeignNode("b") || len(cfg.ForeignNodes) != 2 {
+		t.Fatalf("remove b failed: %+v", cfg.ForeignNodes)
+	}
+	if cfg.ForeignNodes[0].Alias != "a" || cfg.ForeignNodes[1].Alias != "c" {
+		t.Fatalf("wrong remaining order: %+v", cfg.ForeignNodes)
+	}
+	if cfg.RemoveForeignNode("missing") {
+		t.Fatal("removing a missing alias should return false")
+	}
+}
