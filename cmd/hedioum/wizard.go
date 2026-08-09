@@ -323,15 +323,22 @@ func safeAtoi(s string, defaultVal int) int {
 var allMimics = []string{"ssh", "tls", "smtp", "imap", "smtps", "imaps", "directadmin"}
 
 // promptMimics shows a checkbox selection of camouflage protocols and returns the
-// chosen types. The first option ("all") selects the whole arsenal. Never returns
-// empty (falls back to ssh+tls), so a config always has at least one listener.
-func promptMimics() []string {
+// chosen types, defaulting to ssh+tls. The first option ("all") selects the whole
+// arsenal. Never returns empty (falls back to ssh+tls).
+func promptMimics() []string { return promptMimicsWithDefault([]string{"ssh", "tls"}) }
+
+// promptMimicsWithDefault is promptMimics with a caller-supplied pre-selection (used
+// by the edit flows so the current mimic set is pre-checked). Never returns empty.
+func promptMimicsWithDefault(def []string) []string {
 	const allOpt = "all (enable every mimic)"
+	if len(def) == 0 {
+		def = []string{"ssh", "tls"}
+	}
 	var sel []string
 	survey.AskOne(&survey.MultiSelect{
 		Message: "Select camouflage protocols (Space toggles, Enter confirms):",
 		Options: append([]string{allOpt}, allMimics...),
-		Default: []string{"ssh", "tls"},
+		Default: def,
 		Help:    "tls=HTTPS:443, ssh=22, smtp=587, imap=143, smtps=465, imaps=993, directadmin=2222. Run several for a stronger, shifting signature.",
 	}, &sel)
 
