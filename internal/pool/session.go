@@ -22,8 +22,19 @@ type YamuxSession struct {
 	session *yamux.Session
 	state   int32 // Atomic state: Active vs Draining
 
-	// Atomic counters for real-time bandwidth calculation (Bytes)
+	// Atomic counters for real-time bandwidth calculation (Bytes). bytesTransferred
+	// is reset every health interval for the Mbps gauge; cumulativeBytes is never
+	// reset and drives the lifecycle transfer budget.
 	bytesTransferred uint64
+	cumulativeBytes  uint64
+
+	// Protocol-aware lifecycle (see lifecycle.go). A non-SSH pipe retires after
+	// retireAfter OR byteBudget, whichever comes first; SSH retires on the long
+	// retireAfter only (byteBudget == 0 means "no budget").
+	mimicType   string
+	bornAt      time.Time
+	retireAfter time.Duration
+	byteBudget  uint64
 
 	// Chaos Mesh / DPI Evasion Parameters
 	baseLimitMbps  int
@@ -37,17 +48,37 @@ type YamuxSession struct {
 	mu           sync.RWMutex
 }
 
-// NewYamuxSession initializes a monitored physical connection with a randomized bandwidth cap.
-func NewYamuxSession(ys *yamux.Session, baseLimit, jitter int) *YamuxSession {
+// NewYamuxSession initializes a monitored physical connection with a randomized
+// bandwidth cap and a protocol-aware retirement budget rolled from the node's
+// lifecycle policy.
+func NewYamuxSession(ys *yamux.Session, baseLimit, jitter int, mimicType string, policy LifecyclePolicy) *YamuxSession {
+	retireAfter, byteBudget := policy.roll(mimicType)
 	s := &YamuxSession{
 		session:       ys,
 		state:         StateActive,
+		mimicType:     mimicType,
+		bornAt:        time.Now(),
+		retireAfter:   retireAfter,
+		byteBudget:    byteBudget,
 		baseLimitMbps: baseLimit,
 		jitterMbps:    jitter,
 		lastActivity:  time.Now(),
 	}
 	s.UpdateChaosLimit() // Initialize the first fluctuating cap and token bucket
 	return s
+}
+
+// ShouldRetire reports whether this pipe has reached its randomized lifetime or
+// transfer budget and should be drained so the pool churns to a fresh pipe. SSH
+// (byteBudget == 0) retires on its long lifetime only.
+func (ys *YamuxSession) ShouldRetire() bool {
+	if ys.retireAfter > 0 && time.Since(ys.bornAt) >= ys.retireAfter {
+		return true
+	}
+	if ys.byteBudget > 0 && atomic.LoadUint64(&ys.cumulativeBytes) >= ys.byteBudget {
+		return true
+	}
+	return false
 }
 
 // monitoredStream is a Decorator for net.Conn that intercepts IO operations to count bytes and shape traffic.
@@ -69,6 +100,7 @@ func (m *monitoredStream) Read(b []byte) (int, error) {
 	n, err := m.Conn.Read(b)
 	if n > 0 {
 		atomic.AddUint64(&m.parent.bytesTransferred, uint64(n))
+		atomic.AddUint64(&m.parent.cumulativeBytes, uint64(n))
 
 		// Enforce Hard Rate Limit (Token Bucket) AFTER reading.
 		// This forces the app to consume data slowly, filling up the OS socket buffer.
@@ -99,6 +131,7 @@ func (m *monitoredStream) Write(b []byte) (int, error) {
 	n, err := m.Conn.Write(b)
 	if n > 0 {
 		atomic.AddUint64(&m.parent.bytesTransferred, uint64(n))
+		atomic.AddUint64(&m.parent.cumulativeBytes, uint64(n))
 	}
 	return n, err
 }
@@ -192,6 +225,17 @@ func (ys *YamuxSession) IsClosed() bool {
 
 func (ys *YamuxSession) Close() error {
 	return ys.session.Close()
+}
+
+// Age reports how long this physical connection has been alive.
+func (ys *YamuxSession) Age() time.Duration {
+	return time.Since(ys.bornAt)
+}
+
+// CumulativeBytes reports total bytes moved over this connection's whole lifetime
+// (never reset), used for the transfer-budget retirement.
+func (ys *YamuxSession) CumulativeBytes() uint64 {
+	return atomic.LoadUint64(&ys.cumulativeBytes)
 }
 
 func (ys *YamuxSession) IdleTime() time.Duration {
