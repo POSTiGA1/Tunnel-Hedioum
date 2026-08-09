@@ -39,6 +39,8 @@ func runSubcommand(name string, args []string) {
 		cmdSpeedtest(args)
 	case "probe":
 		cmdProbe(args)
+	case "check-ip":
+		cmdCheckIP(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -73,6 +75,7 @@ Usage:
   hedioum-tunnel remove-node --alias NAME
   hedioum-tunnel speedtest [--node NAME] [--mimic ssh|tls] [--seconds N] [--dir down|up|both]
   hedioum-tunnel probe     [--node NAME]    Test each endpoint (mimic) and report reachability
+  hedioum-tunnel check-ip                   Report the egress IP's reputation (clean vs flagged)
 
 Flags for the default mode:
   --reset            Wipe the config and re-run the setup wizard
