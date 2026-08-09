@@ -23,10 +23,22 @@ hand-wave. Ground every claim in (a) what a censor can actually observe or do,
 concrete test or capture. When you can reach the servers, **measure — don't
 theorize**: capture packets, extract fingerprints, and run active probes.
 
-Two rules the whole skill serves:
+Three rules the whole skill serves:
 1. **Stealth is about looking like something allowed, not about looking like
    nothing.** Fully-random / fully-encrypted traffic is itself a signature.
-2. **Every stealth change has a throughput/UX cost.** Always state the trade-off;
+2. **A connection must live and move data like the protocol it imitates.** This is
+   the strongest real-world signal after raw data volume, and it is *independent of
+   how perfect the handshake is*. SSH sessions are naturally long-lived and SSH is
+   trusted infrastructure (datacenters and the censors themselves use it), so a
+   long-lived SSH tunnel is normal and draws **less** scrutiny. A TLS/HTTPS or mail
+   "session" is short and bursty — fetch a page or a file and stop. A TLS mimic held
+   open for hours moving tens of GB is anomalous *no matter how good its JA3/cert*.
+   **Operator-proven:** an SSH-fronted Hedioum deployment carried TB of traffic for
+   hundreds of users across multiple full Iran shutdowns without being filtered;
+   long-lived high-volume non-SSH did not survive. Therefore: **SSH is the
+   long-lived backbone; every non-SSH mimic is auxiliary — short, randomized
+   lifetime and a capped transfer budget, then it churns.**
+3. **Every stealth change has a throughput/UX cost.** Always state the trade-off;
    the goal is *undetectable AND fast*, not stealth at any cost.
 
 Read `references/threat-model.md` for the detailed censor capability model and
@@ -40,6 +52,14 @@ the operating method + the Hedioum-specific weakness map.
 - **Passive fingerprinting.** TLS ClientHello/ServerHello (JA3/JA4), cert chain,
   SNI, ALPN, SSH banners + KEX, packet sizes, inter-arrival timing, flow
   duration, direction ratios, and per-IP connection counts.
+- **Session shape vs protocol semantics** (the strongest real signal after volume).
+  *How long a connection stays open and how much it moves, versus what that
+  protocol is for.* Hours-long, multi-GB flows over a normally short-lived protocol
+  (HTTPS, mail) are anomalous even with a flawless handshake. SSH is the exception
+  (long-lived is normal, trusted infra ⇒ less scrutiny).
+- **Passive OS/TCP-stack fingerprint (p0f).** TTL, window size, and TCP-options
+  order reveal the sender OS. A Chrome JA3 (uTLS) riding a **Linux** TCP stack
+  (TTL 64) is an **OS mismatch** that flags a Linux proxy in the path.
 - **Fully-encrypted-traffic heuristics.** Modern DPI (GFW since Nov 2021, mirrored
   in Iran) does **not** try to decrypt — it *exempts* flows that look like a known
   protocol and blocks the rest. Exemption heuristics operate on the **first ~6
@@ -69,18 +89,28 @@ comes from. (Paths are in `internal/mimic/`, `internal/securestream/`,
 - **On the wire:** a real `SSH-2.0-...` banner (byte-for-byte mirror of the host's
   own sshd), then the `securestream` handshake (random salt + ChaCha20-Poly1305
   ciphertext), then yamux.
-- **Why the banner helps:** printable-ASCII start ⇒ *exempted* by the
-  fully-encrypted heuristic, and the later high-entropy payload matches real SSH.
-- **The real weaknesses:**
-  - **Nobody opens 10–20 parallel SSH sessions to one foreign IP.** The
-    `internal/pool` warm-up (`min_connections`) is a glaring anomaly — real SSH is
-    1 long session. This is the SSH mimic's biggest tell (traffic analysis, not DPI).
-  - **Outbound :22 to a random foreign datacenter IP** is rare from Iran and is
-    frequently throttled/blocked wholesale (see community issue "port 22 filtered").
-  - The securestream handshake after the banner never completes a *real* SSH KEX —
-    an active prober that speaks SSH-2.0 KEXINIT is routed to the **decoy sshd**
-    (good), but the *timing/behaviour* of that redirect can differ from a native
-    sshd. Verify the decoy is byte- and timing-faithful.
+- **Why SSH is the backbone (not the weak link):** printable-ASCII banner ⇒
+  *exempted* by the fully-encrypted heuristic; long-lived is *normal* for SSH; and
+  SSH is trusted infrastructure everyone (incl. the censor) uses ⇒ **least
+  scrutiny**. Operator experience: an SSH-fronted deployment survived TB and
+  multiple full shutdowns. SSH should carry the persistent bulk of the tunnel.
+- **The real SSH weaknesses (footprints to fix, not reasons to drop SSH):**
+  - **Nobody opens 10–20 *parallel* SSH sessions to one foreign IP.** The
+    `internal/pool` warm-up (`min_connections`) is the biggest tell — real SSH is a
+    *few* long sessions, not a scaling swarm. Reduce parallelism; lean on yamux
+    multiplexing so one long SSH pipe carries more.
+  - **Banner-only mimicry / no KEXINIT.** After the `SSH-2.0-…` banner Hedioum
+    sends `securestream` bytes, **not** a real SSH `KEXINIT`. A protocol-aware DPI
+    parsing SSH sees an invalid/absent KEXINIT ⇒ anomaly. (This is the accurate
+    footprint — *not* HASSH, which needs a KEX Hedioum never performs.) Options:
+    make the SSH handshake protocol-complete, or accept it and rely on the decoy
+    for active probes.
+  - **Network-dependent :22 blocking.** Some Iran ISPs throttle/block outbound :22
+    wholesale (community issue "port 22 filtered"). Where that happens, SSH can run
+    on another port (weaker banner-mimicry) or the auxiliary mimics carry the load —
+    but where :22 is allowed, SSH is the strongest base.
+  - Active probes that speak SSH-2.0 KEXINIT are routed to the **decoy sshd** —
+    verify that redirect is byte- and timing-faithful.
 
 ### TLS/HTTPS mimic (`tls.go`, `tlsauth.go`) — port 443
 - **On the wire:** a **real** TLS 1.2/1.3 handshake, then application data (the
@@ -104,6 +134,17 @@ comes from. (Paths are in `internal/mimic/`, `internal/securestream/`,
   - **Decoy realism.** Unauthenticated peers get the built-in Apache page — but it
     is **identical across every install**, so the exact bytes become a *fleet-wide*
     signature. A prober comparing two Hedioum servers sees the same page.
+  - **Long-lived, high-volume TLS is itself the tell** (see rule 2). Real HTTPS
+    connections are short and bursty; a TLS mimic that holds a connection open for
+    hours moving tens of GB defeats the perfect handshake. **TLS (and all non-SSH
+    mimics) must be auxiliary: short randomized lifetime + a transfer cap, then
+    churn** — never the persistent backbone.
+  - **Post-handshake distinguishers** (if you later add REALITY/ShadowTLS-style
+    camouflage): mishandled `NewSessionTicket`, anomalous message lengths, and
+    "HMAC tainting" (extra MAC bytes) let a passive tool separate camouflage-TLS
+    from a real browser↔site session (net4people/bbs #481). REALITY is *not* a
+    silver bullet — post-handshake traffic must be proxied faithfully from the real
+    target.
 
 ### STARTTLS SMTP/IMAP (`starttls.go`) — 587 / 143; implicit SMTPS/IMAPS — 465 / 993
 - **On the wire:** a plaintext mail prologue (`220 … ESMTP`, `EHLO`, `STARTTLS`)
@@ -121,6 +162,14 @@ comes from. (Paths are in `internal/mimic/`, `internal/securestream/`,
   and down together, is a **strong traffic-analysis fingerprint** regardless of
   which mimic wraps them. Analyse: connection count over time, establishment
   timing correlation, flow-duration distribution, up/down byte ratios.
+- **Missing: protocol-aware connection lifecycle.** Hedioum today keeps *every*
+  pool connection long-lived, no matter the mimic. Per rule 2 this is correct for
+  **SSH** but wrong for the rest. The target model: **SSH = persistent backbone;
+  each non-SSH pipe = auxiliary with a randomized short lifetime (e.g. 5–60 min)
+  and a transfer budget (e.g. 1–5 GB), after which it closes and a fresh pipe (new
+  5-tuple, possibly a different mimic/port) replaces it.** This makes each non-SSH
+  flow look like a real short HTTPS/mail session and denies the censor a stable,
+  long-lived, high-volume flow to correlate.
 
 ### The securestream transport (`internal/securestream`)
 - ChaCha20-Poly1305 + HKDF keyed by the token; random salt prefix; per-frame
@@ -177,14 +226,20 @@ enables → severity → fix**, most severe first.
 
 | # | Finding | Severity | Fix direction |
 |---|---------|:--------:|---------------|
-| 1 | **Self-signed cert on :443** (no real domain/SNI) — active/passive proxy tell | 🔴 High | REALITY (steal a real site's cert) OR real domain + Let's Encrypt |
-| 2 | **Pool = N correlated long-lived flows to one IP** — traffic-analysis signature | 🔴 High | Fewer/longer conns, decorrelated establishment, or multiplex more per pipe |
-| 3 | **SSH mimic on :22 to a foreign datacenter IP** — rare, throttled, anomalous pool | 🟠 Med | Prefer TLS:443; treat SSH as secondary; never the only/primary mimic |
-| 4 | **Identical Apache decoy across installs** — fleet-wide signature | 🟠 Med | Per-install decoy diversity; optional :80→:443 redirect; real backend |
-| 5 | **Datacenter exit IP reputation** — geo/AI blocks, easy ASN targeting | 🟠 Med | IP-reputation pre-check; residential/clean ranges; per-destination routing |
-| 6 | **uTLS Chrome fingerprint drift** — stale JA3 becomes detectable | 🟡 Low | Track uTLS/Chrome versions; verify pinned `HelloChrome_Auto` |
-| 7 | **Mail mimics reveal non-MTA behaviour under deep probe** | 🟡 Low | Only enable where mail is plausible; richer prologue; real mail decoy |
+| 1 | **Non-SSH mimics held long-lived / high-volume** — a TLS/mail flow open for hours moving GB is anomalous regardless of handshake (rule 2) | 🔴 High | Protocol-aware lifecycle: SSH persistent backbone; non-SSH auxiliary, 5–60 min randomized lifetime + 1–5 GB cap, then churn |
+| 2 | **Self-signed cert on :443** (no real domain/SNI) — active/passive proxy tell | 🔴 High | REALITY (borrow a real site's cert, proxy post-handshake faithfully) OR real domain + Let's Encrypt |
+| 3 | **Pool = N correlated flows to one IP** — traffic-analysis signature | 🔴 High | Fewer/fatter pipes (yamux+16MB+BBR), decorrelated warm-up; SSH carries the persistent load |
+| 4 | **Datacenter exit IP reputation** — geo/AI blocks, easy ASN targeting, "white-IP" shutdowns | 🔴 High | `check-ip` pre-deploy; residential/clean ranges; CDN fronting; per-destination routing |
+| 5 | **SSH mimic is banner-only (no KEXINIT)** — invalid SSH after the banner | 🟠 Med | Protocol-complete SSH handshake, or rely on the decoy for active probes |
+| 6 | **p0f OS mismatch** — Chrome JA3 over a Linux TCP stack (TTL 64) | 🟠 Med | Optional NFQUEUE "TCP persona" (TTL/WS/options → Windows) |
+| 7 | **Identical Apache decoy across installs** — fleet-wide signature | 🟠 Med | Per-install decoy diversity; optional :80→:443 redirect; real backend |
+| 8 | **No CDN fronting / IP-port rotation** — stable single-IP target | 🟠 Med | WS-over-TLS-behind-CDN transport; scheduled IP/port rotation |
+| 9 | **uTLS Chrome fingerprint drift** — stale JA3/JA4 becomes detectable | 🟡 Low | Track uTLS/Chrome versions; verify pinned `HelloChrome_Auto` |
+| 10 | **Mail mimics reveal non-MTA behaviour under deep probe** | 🟡 Low | Only enable where mail is plausible; richer prologue; real mail decoy |
 
+**Do NOT recommend dropping or de-emphasizing SSH** — it is the proven long-lived
+backbone (see rule 2). The fix is to make the *non-SSH* mimics behave like the
+short-lived protocols they imitate, not to shift the persistent load onto them.
 Re-run the audit and update this table; do not treat it as static.
 
 ---
@@ -192,23 +247,38 @@ Re-run the audit and update this table; do not treat it as static.
 ## 5. Hardening priorities (see `references/hardening-playbook.md`)
 
 In rough order of impact-per-effort for THIS project:
-1. **Kill the self-signed-cert tell:** add a REALITY-style handshake (proxy
-   unknown-SNI probes to a real target, borrow its cert) or real-domain + ACME.
-   This is the highest-leverage change.
-2. **CDN / WebSocket fronting** (VLESS+WS+TLS behind Cloudflare/ArvanCloud style):
-   hides the real foreign IP, uses the CDN's SNI, and sidesteps IP-reputation and
-   ASN targeting.
-3. **Shrink the pool signature:** decorrelate connection establishment, allow
-   fewer but longer-lived pipes, and prefer heavier per-pipe multiplexing over
-   many parallel TCP flows.
-4. **First-byte / entropy safety:** keep every mimic's first bytes protocol-shaped
-   (TLS record or ASCII banner). Never expose a raw high-entropy prefix.
-5. **Decoy diversity + realism:** rotate decoy templates per install; make the web
-   decoy respond to more paths/verbs like a real server.
-6. **Exit-IP hygiene:** a built-in `check-ip` (Gemini/OpenAI/ASN) before deploy;
-   domain/GeoIP split-routing so sensitive services use a clean exit.
-7. **Timing/padding shaping** *only if measured to help* — it costs latency and
-   throughput, so validate against a real trace before shipping.
+1. **Protocol-aware connection lifecycle (operator-proven, do first).** Make SSH the
+   persistent backbone and every non-SSH mimic auxiliary: a randomized short
+   lifetime (≈5–60 min) and a transfer budget (≈1–5 GB), then close and replace with
+   a fresh pipe (new 5-tuple, possibly different mimic/port). This is what actually
+   kept the v0.3.2 SSH deployment alive. Touch: `internal/pool` (per-mimic lifetime
+   & byte budget), `internal/ingress/dial.go` (churn/replacement).
+2. **Kill the self-signed-cert tell:** a REALITY-style handshake (proxy unknown-SNI
+   probes to a real target, borrow its cert, **and proxy post-handshake traffic
+   faithfully** to avoid the NewSessionTicket/message-length distinguishers) or a
+   real domain + ACME.
+3. **CDN / WebSocket fronting** (VLESS+WS+TLS behind Cloudflare/ArvanCloud style):
+   hides the real foreign IP, uses the CDN's SNI, sidesteps IP-reputation/ASN
+   targeting — and a domestic-CDN edge can survive "white-IP-only" shutdowns.
+4. **Shrink the pool signature:** decorrelate warm-up establishment; fewer, fatter
+   pipes (yamux + 16MB window + BBR) instead of many parallel TCP flows.
+5. **Exit-IP hygiene:** built-in `check-ip` (Gemini/OpenAI/ASN) before deploy;
+   clean/residential ranges; domain/GeoIP split-routing for sensitive services.
+6. **IP / port rotation:** scheduled rotation of the listener port set and multi-IP
+   failover so bulk flow cannot be pinned to one stable target.
+7. **Decoy diversity + realism:** per-install decoy templates; richer web decoy.
+8. **First-byte / entropy safety:** a regression assertion that every mimic's first
+   bytes are protocol-shaped (TLS record / ASCII banner), never raw high-entropy.
+9. **Optional wire-level OS persona (NFQUEUE):** rewrite TTL/window/TCP-options so
+   the Linux node presents a Windows p0f profile, removing the OS mismatch.
+10. **Timing/padding shaping** *only if a trace proves it helps* — it costs latency
+    and throughput.
+
+**Extreme-adversary note (full shutdown):** during Iran's total "international
+internet" shutdowns only **white-listed IPs** stay reachable. Plan for it: a
+domestic-CDN-fronted path, or a foreign IP/port pairing that lands on an
+allow-listed edge, is the only thing that survives — no amount of DPI evasion helps
+when the pipe itself is cut.
 
 ---
 

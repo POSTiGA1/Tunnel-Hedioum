@@ -8,6 +8,26 @@ adversary has*, mapped to how it bites Hedioum.
 
 ## A. Passive fingerprinting (no interaction)
 
+### A0. Session shape vs protocol semantics — the dominant real-world signal
+After raw data volume, the strongest discriminator is **how a connection lives**
+versus **what the protocol it claims to be is used for**. A censor does not need to
+break the crypto; it watches duration + volume + directionality per protocol:
+- **HTTPS / mail** connections are short and bursty in the wild — fetch a page, an
+  update, a file; a handful of seconds to minutes; then idle/close. A "TLS" or
+  "SMTP" flow that stays open for **hours** and moves **tens of GB** is anomalous
+  **no matter how perfect its JA3, cert, or SNI**. Perfect handshakes do not save a
+  wrong session shape.
+- **SSH** is the exception: interactive/forwarding SSH is naturally long-lived,
+  SSH is trusted infrastructure that datacenters and the censors themselves run, and
+  it is *known* to be awkward for tunneling — so it draws **less** scrutiny.
+  **Operator-proven:** an SSH-fronted Hedioum deployment carried TB for hundreds of
+  users across multiple full Iran shutdowns without being filtered; equivalent
+  long-lived high-volume non-SSH did not survive.
+- **Design consequence:** SSH = persistent backbone; every **non-SSH** mimic must be
+  **auxiliary** — randomized short lifetime (≈5–60 min) + a transfer budget
+  (≈1–5 GB), then churn to a fresh pipe. This is the single most important stealth
+  property for Hedioum and it is *independent of* handshake perfection.
+
 ### A1. TLS fingerprinting (JA3 / JA4 / JA3S / JA4S)
 - The ClientHello (cipher suites, extensions, curves, ALPN, order) hashes to a
   **JA3/JA4** fingerprint. A Go-crypto/tls ClientHello is instantly non-browser.
@@ -35,9 +55,28 @@ adversary has*, mapped to how it bites Hedioum.
 - Source: "How the GFW Detects and Blocks Fully Encrypted Traffic", USENIX
   Security 2023 (gfw.report/publications/usenixsecurity23).
 
-### A3. SSH fingerprinting
-- Banner string, KEXINIT algorithm list/order, packet sizing. Hedioum mirrors the
-  host banner (good) but the pool behaviour (below) betrays it anyway.
+### A3. SSH fingerprinting (and why HASSH does *not* apply to Hedioum)
+- **HASSH** fingerprints the SSH `KEXINIT` (KEX/cipher/MAC/compression list+order).
+  A Go-vs-OpenSSH KEXINIT hashes differently. **But Hedioum's SSH mimic never sends
+  a KEXINIT** — it emits the real `SSH-2.0-…` banner (mirrored, good) then
+  `securestream` bytes. So HASSH has nothing to fingerprint. The **real** footprint
+  is the *inverse*: a protocol-aware DPI parsing SSH expects a KEXINIT after the
+  banner and finds non-SSH bytes ⇒ anomaly. Fix by making the handshake
+  protocol-complete or leaning on the decoy for active probes.
+- The pool's *parallelism* (A4) is the other SSH tell — real SSH is a few long
+  sessions, not a scaling swarm.
+
+### A6. Passive OS / TCP-stack fingerprint (p0f)
+- **TTL, window size, and TCP-options order** (MSS/SACK/Timestamps/WS) reveal the
+  sender OS. Windows TTL≈128 + option order `MSS,NOP,WS,NOP,NOP,SACK`; Linux TTL≈64
+  + `MSS,SACK,TS,NOP,WS`. A **Chrome JA3 (uTLS) over a Linux TCP stack (TTL 64)** is
+  an **OS mismatch** — a strong "Linux proxy in the path" signal.
+- **Note (correction to a common claim):** MSS/MTU *reduction* (e.g. 1380 vs 1460)
+  is an **L3-tunnel** (WireGuard/IPsec) signature. Hedioum is an **app-layer TCP**
+  tunnel, so the outer MSS stays normal — this signal does **not** apply. Do not
+  "fix" it by adding an L3 layer.
+- Mitigation: optional NFQUEUE "TCP persona" rewriting TTL/WS/options to a Windows
+  profile — removes the mismatch without changing the base OS config.
 
 ### A4. Traffic analysis (the hardest to hide, mimic-independent)
 - **Connection count to one IP over time.** A browser opens a handful of short
@@ -82,6 +121,18 @@ adversary has*, mapped to how it bites Hedioum.
 - **Certificate transparency / scanning:** a real domain with a valid cert is
   logged in CT; a bare IP with a self-signed cert stands out to internet-wide
   scanners (Censys/Shodan-style) that censors also run.
+
+## C2. Extreme mode — total shutdown / white-IP only
+Iran has hit the **"international internet" kill switch** repeatedly (e.g. Jun 2025,
+Jan 2026, and a ~3-month cut from late Feb 2027, war-driven). In that mode almost
+all foreign connectivity is severed and **only white-listed IPs remain reachable**.
+- No DPI-evasion technique helps here — the pipe itself is cut. Survival depends on
+  the *reachability* of the path, not its stealth: a **domestic-CDN-fronted** route
+  (e.g. an Iran-hosted CDN edge that stays whitelisted) or a foreign endpoint that
+  lands on an allow-listed address/edge.
+- Treat this as a distinct requirement: "stay *reachable* during a shutdown" is a
+  different goal from "stay *undetected* during normal filtering", and needs a
+  fronting/whitelist strategy, not obfuscation.
 
 ## D. What Hedioum already does right (don't "fix" these)
 
