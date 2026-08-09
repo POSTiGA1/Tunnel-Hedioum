@@ -11,8 +11,10 @@ import (
 )
 
 // fakeDialer pairs a yamux client/server over an in-memory pipe and drains any
-// streams the pool opens, standing in for a real egress.
-func fakeDialer() (*yamux.Session, error) {
+// streams the pool opens, standing in for a real egress. It reports "ssh" so the
+// warm-up count stays stable during the test (SSH rotates only on a multi-hour
+// schedule, so no pipe retires mid-test).
+func fakeDialer() (*yamux.Session, string, error) {
 	c, s := net.Pipe()
 	go func() {
 		srv, err := yamux.Server(s, yamux.DefaultConfig())
@@ -28,7 +30,8 @@ func fakeDialer() (*yamux.Session, error) {
 			go io.Copy(io.Discard, st)
 		}
 	}()
-	return yamux.Client(c, yamux.DefaultConfig())
+	sess, err := yamux.Client(c, yamux.DefaultConfig())
+	return sess, "ssh", err
 }
 
 func TestSubPoolsTCPandUDP(t *testing.T) {

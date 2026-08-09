@@ -104,16 +104,16 @@ func (d *endpointDialer) pick() config.Endpoint {
 	return d.node.Endpoints[len(d.node.Endpoints)-1]
 }
 
-func (d *endpointDialer) dial() (*yamux.Session, error) {
+func (d *endpointDialer) dial() (*yamux.Session, string, error) {
 	ep := d.pick()
 	session, err := DialEndpoint(ep, d.node.AuthToken, d.cfg)
 	if err != nil {
 		slog.Warn("pipe dial failed", "node", d.node.Alias, "mimic", ep.Mimic, "target", ep.Target, "err", err)
-		return nil, err
+		return nil, ep.Mimic, err
 	}
 	slog.Info("pipe established", "node", d.node.Alias, "mimic", ep.Mimic, "target", ep.Target)
 	go keepAlive(session)
-	return session, nil
+	return session, ep.Mimic, nil
 }
 
 // keepAlive sends a randomized-interval Yamux ping to evade DPI periodicity checks.

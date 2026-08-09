@@ -20,8 +20,9 @@ const (
 	healthCheckFreq = 10 * time.Second
 )
 
-// DialFunc is the signature for the function that creates a new authenticated TCP connection.
-type DialFunc func() (*yamux.Session, error)
+// DialFunc creates a new authenticated physical connection and reports which mimic
+// type it used, so the pool can apply the protocol-aware retirement policy.
+type DialFunc func() (*yamux.Session, string, error)
 
 // PoolStats holds real-time telemetry data for the interactive dashboard.
 type PoolStats struct {
@@ -40,6 +41,7 @@ type NodePool struct {
 	baseLimitMbps  int
 	jitterMbps     int
 	dialer         DialFunc
+	lifecycle      LifecyclePolicy
 	sessions       []*YamuxSession
 	mu             sync.RWMutex
 	currentMbps    int32 // Atomic total bandwidth of this pool for dashboard monitoring
@@ -76,7 +78,7 @@ func NewHubManager() *HubManager {
 }
 
 // newNodePool builds and starts a monitored connection pool.
-func newNodePool(cfg config.ForeignNode, label string, minConns, maxConns int, dialer DialFunc) *NodePool {
+func newNodePool(cfg config.ForeignNode, label string, minConns, maxConns int, dialer DialFunc, lifecycle LifecyclePolicy) *NodePool {
 	pool := &NodePool{
 		Alias:          cfg.Alias,
 		label:          label,
@@ -86,6 +88,7 @@ func newNodePool(cfg config.ForeignNode, label string, minConns, maxConns int, d
 		baseLimitMbps:  cfg.BandwidthLimitMbps,
 		jitterMbps:     cfg.BandwidthJitterMbps,
 		dialer:         dialer,
+		lifecycle:      lifecycle,
 		sessions:       make([]*YamuxSession, 0, maxConns),
 		shutdown:       make(chan struct{}),
 	}
@@ -107,9 +110,13 @@ func (hm *HubManager) RegisterNode(cfg config.ForeignNode, dialer DialFunc) {
 		maxConns = minConns + 5 // Ensure max is always reasonably higher than min
 	}
 
+	// Per-server lifecycle personality, seeded from this node's secret auth token:
+	// each server churns with different aggregate statistics, unguessable from outside.
+	lifecycle := NewLifecyclePolicy(cfg.AuthToken)
+
 	hm.pools[cfg.Alias] = &nodePools{
-		tcp: newNodePool(cfg, "tcp", minConns, maxConns, dialer),
-		udp: newNodePool(cfg, "udp", udpMinConns, udpMaxConns, dialer),
+		tcp: newNodePool(cfg, "tcp", minConns, maxConns, dialer, lifecycle),
+		udp: newNodePool(cfg, "udp", udpMinConns, udpMaxConns, dialer, lifecycle),
 	}
 }
 
@@ -218,16 +225,30 @@ func (np *NodePool) evaluateHealthAndScale() {
 		if s.IsActive() {
 			activeCount++
 
-			// Scale-Up trigger: If this connection is pushing beyond 80% of its Chaos Cap
-			if mbps >= int(float64(cap)*0.8) {
-				needsScaleUp = true
-			}
-
-			// Scale-Down logic: Drop excess connections that are barely moving traffic
-			if activeCount > np.minConnections && mbps < 1 && s.IdleTime() > dynamicIdleLimit {
-				s.SetDraining() // Shift to Draining (Wait for logical streams to drop to zero)
+			// Protocol-aware retirement (the dominant stealth property): a pipe past
+			// its randomized lifetime / transfer budget is drained UNCONDITIONALLY —
+			// even at the minimum pool size — so the pool churns to a fresh pipe with
+			// a new random mimic. The min-connection guarantee below immediately
+			// replaces it. SSH rotates on a long (hours) schedule; every other mimic
+			// churns fast (minutes / a few GB). Independent random per-connection
+			// timers keep retirements staggered, never all at once.
+			if s.ShouldRetire() {
+				s.SetDraining()
 				activeCount--
-				slog.Info("scaled down: connection draining (idle/low load)", "node", np.Alias, "pool", np.label)
+				slog.Info("retired: lifecycle budget reached", "node", np.Alias, "pool", np.label,
+					"mimic", s.mimicType, "age", s.Age().Round(time.Second), "mb", s.CumulativeBytes()/(1024*1024))
+			} else {
+				// Scale-Up trigger: If this connection is pushing beyond 80% of its Chaos Cap
+				if mbps >= int(float64(cap)*0.8) {
+					needsScaleUp = true
+				}
+
+				// Scale-Down logic: Drop excess connections that are barely moving traffic
+				if activeCount > np.minConnections && mbps < 1 && s.IdleTime() > dynamicIdleLimit {
+					s.SetDraining() // Shift to Draining (Wait for logical streams to drop to zero)
+					activeCount--
+					slog.Info("scaled down: connection draining (idle/low load)", "node", np.Alias, "pool", np.label)
+				}
 			}
 		} else if s.IsDraining() {
 			// Deep cleanup: Only close a draining session when ALL its streams have naturally finished
@@ -294,11 +315,12 @@ func (np *NodePool) replenishPool(needed int) {
 	for i := 0; i < needed; i++ {
 		time.Sleep(staggerDelay)
 
-		rawYamuxSession, err := np.dialer()
+		rawYamuxSession, mimicType, err := np.dialer()
 		if err == nil && rawYamuxSession != nil {
 
-			// Initialize with our customized Chaos Wrapper (Token Bucket is initialized inside)
-			wrappedSession := NewYamuxSession(rawYamuxSession, np.baseLimitMbps, np.jitterMbps)
+			// Initialize with our customized Chaos Wrapper (Token Bucket + protocol-aware
+			// retirement budget are rolled inside).
+			wrappedSession := NewYamuxSession(rawYamuxSession, np.baseLimitMbps, np.jitterMbps, mimicType, np.lifecycle)
 
 			np.mu.Lock()
 			if len(np.sessions) < np.maxConnections {
