@@ -1,8 +1,12 @@
 # Hedioum Dynamic Pool Tunnel (Chaos Mesh)
 
+[![Downloads](https://img.shields.io/github/downloads/hedioum/Hedioum-Pool-Tunnel/total?color=brightgreen&label=downloads)](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases)
+[![Latest release](https://img.shields.io/github/v/release/hedioum/Hedioum-Pool-Tunnel?color=blue&label=release)](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest)
+[![Stars](https://img.shields.io/github/stars/hedioum/Hedioum-Pool-Tunnel?style=flat)](https://github.com/hedioum/Hedioum-Pool-Tunnel/stargazers)
+
 🌐 **[🇮🇷 راهنمای فارسی — Persian README](README.fa.md)** · **[Latest release](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest)**
 
-Hedioum Pool Tunnel is a high-performance, enterprise-grade connection multiplexer designed to bypass strict Deep Packet Inspection (DPI) and thwart TCP Meltdown under heavy load. It operates as a Custom SDN Overlay, wrapping encrypted VLESS/Trojan traffic into highly obfuscated, dynamically scaling connection pools that wear interchangeable disguises — **SSH, TLS/HTTPS, and SMTP/IMAP** — over a modern authenticated-encryption transport.
+Hedioum Pool Tunnel is a high-performance, enterprise-grade connection multiplexer designed to bypass strict Deep Packet Inspection (DPI) and thwart TCP Meltdown under heavy load. It operates as a Custom SDN Overlay, wrapping encrypted VLESS/Trojan traffic into highly obfuscated, dynamically scaling connection pools that wear interchangeable disguises — **SSH, TLS/HTTPS, SMTP/IMAP, and a DirectAdmin control panel** — over a modern authenticated-encryption transport.
 
 ## 🌟 Key Features
 
@@ -11,9 +15,11 @@ Hedioum Pool Tunnel is a high-performance, enterprise-grade connection multiplex
 - **Zero-Downtime Connection Draining:** During scale-down events, idle physical connections are placed in a `Draining` state. They wait for active logical streams (like open socket connections) to finish naturally before closing, ensuring zero lag or disconnections for end-users.
 - **Enterprise Lifecycle Management:** Features an interactive TUI dashboard equipped with a Blue-Green Self-Updater (with automatic rollback on failure) and a Clean Uninstaller that purges all traces without leaving orphaned files.
 - **Authenticated Encryption (ChaCha20-Poly1305):** The transport is wrapped in a modern AEAD stream keyed via HKDF from your token. ChaCha20 needs no AES-NI, so overhead stays minimal on cheap/ARM VPS. The token is never sent on the wire and also keys the cipher, so a passive observer sees only random salts followed by ciphertext.
+- **Real Certificate (Let's Encrypt) or DirectAdmin Persona:** Point a domain at the foreign node (`--domain`) and the TLS mimic serves a genuine, **auto-renewing Let's Encrypt certificate** (ACME) — CT-logged like any real HTTPS host, with a DNS A/AAAA pre-check, a self-healing warm-and-renew loop, and a graceful self-signed fallback so a certificate hiccup can never break the tunnel. Without a domain, a self-signed cert is used. Optionally the node wears a **DirectAdmin control-panel persona**: a pixel-faithful DirectAdmin *Evolution* login (light + dark mode, real assets embedded in the binary) on **:2222**, where a self-signed certificate is authentic — and the web ports answer exactly like a real DirectAdmin box.
+- **Protocol-Aware Connection Lifecycle:** After raw volume, the strongest real-world tunnel tell is *protocol × connection lifetime*. SSH is the trusted long-lived backbone (rotating on a randomized multi-hour schedule); every non-SSH mimic is auxiliary with a **randomized 5–60 min lifetime + 1–5 GB transfer budget**, then it drains and the pool churns to a fresh pipe with a new random mimic. Each server's timings are seeded from its secret token, so no two servers churn alike.
 - **Full TCP + UDP:** A single local SOCKS5 port serves both TCP (CONNECT) and UDP (ASSOCIATE), so QUIC/HTTP3, DNS, and voice/video calls work. UDP rides its own dedicated (still SSH-masked) connection sub-pool, isolated from TCP so a bulk download can't stall a call, with drop-on-congestion so a slow link never buffers unboundedly. UDP never touches the wire between the nodes — it is tunnelled over the masked TCP link.
 - **Optional IPv6:** The inter-node link and egress-to-internet can use IPv6 (`egress_ip_mode`: `ipv4` default / `ipv6` / `dual`), opt-in so the server's IPv6 identity is never leaked by default.
-- **Pluggable Protocol Mimicry (Arsenal):** A single node can listen behind several camouflages at once — **SSH** (real SSH-2.0 banner mirrored byte-for-byte from the host's own `sshd`), **TLS/HTTPS** (a real TLS handshake with a self-signed cert; unauthenticated probes and browsers get a plausible `nginx` web page), **STARTTLS SMTP/IMAP** (587/143), and **implicit-TLS SMTPS/IMAPS** (465/993). The hub spreads its physical pipes across these with a **per-install fluctuating distribution** (Chaos Mesh v2), so two servers running the same build present different, shifting on-wire signatures. Every mimic routes unauthorized probes to a protocol-appropriate decoy (the real `sshd`, or an **Apache2 Ubuntu default page** for the web/mail mimics), and a plaintext **Apache decoy runs on `:80`** so even the bare IP looks like an ordinary web host to reputation scanners. See **[docs/MIMICS.md](docs/MIMICS.md)**.
+- **Pluggable Protocol Mimicry (Arsenal):** A single node can listen behind several camouflages at once — **SSH** (real SSH-2.0 banner mirrored byte-for-byte from the host's own `sshd`), **TLS/HTTPS** (a real TLS handshake; a real Let's Encrypt cert with a domain, self-signed otherwise), **STARTTLS SMTP/IMAP** (587/143), **implicit-TLS SMTPS/IMAPS** (465/993), and a **DirectAdmin panel** on **:2222** (a faithful *Evolution* login). The hub spreads its physical pipes across these with a **per-install fluctuating distribution** (Chaos Mesh v2), so two servers running the same build present different, shifting on-wire signatures. Every mimic routes unauthorized probes to a protocol-appropriate decoy — the real `sshd`, the DirectAdmin login, or a web persona (**Apache2 Ubuntu default page** or a **DirectAdmin hosting box**, selectable via `--decoy-style`) whose `Server`/`ETag`/`Last-Modified` are **per-install unique** (seeded from the token, no fleet-wide signature). A plaintext decoy runs on **`:80`** (redirecting to HTTPS when a domain is set) so even the bare IP looks like an ordinary web host to reputation scanners. See **[docs/MIMICS.md](docs/MIMICS.md)**.
 - **No DNS Leak by Design:** the SOCKS5 ingress forwards the destination **domain** (never a locally-resolved IP) through the tunnel, so DNS is resolved on the **foreign** node — configure your client for remote DNS (`domainStrategy: AsIs`) and the Iran box emits no DNS query for tunneled destinations. See the verification steps in [docs/MIMICS.md](docs/MIMICS.md).
 - **Channel-Bound Token Auth (no double crypto):** The TLS mimic authenticates the peer with an HMAC bound to the server's live certificate fingerprint — proving knowledge of the token *without ever sending it* and defeating MITM — while keeping a **single** crypto layer (the TLS session itself) for uniform, high-throughput performance. The client uses **uTLS** (a real Chrome ClientHello) to defeat JA3 fingerprinting.
 - **Throughput Engineering:** BBR congestion control + `fq` qdisc are enabled on install, Yamux stream windows are widened to 16 MB for high bandwidth-delay-product links, and a built-in `speedtest` command measures real end-to-end egress throughput (un-shaped) per endpoint.
@@ -45,18 +51,27 @@ Copy the matching binary (`hedioum-tunnel` / `hedioum-tunnel-arm64`) to the serv
 ### Non-interactive (automation)
 
     hedioum-tunnel install
-    hedioum-tunnel setup-foreign --mimics all --move-ssh                                              # foreign; prints the token
+    hedioum-tunnel setup-foreign --mimics all --move-ssh --domain vpn.example.com --decoy-style directadmin   # foreign; prints the token
     hedioum-tunnel setup-iran   --alias DE-01 --target-ip <IP> --mimics all --socks-port 40001 --token <hex>
     systemctl start hedioum.service
 
-`--mimics all` enables SSH + TLS; list them explicitly for the full arsenal:
-`--mimics ssh,tls,smtp,imap,smtps,imaps`. Updates are rollback-safe
-(`hedioum-tunnel update`, or `update --file <path>` when GitHub is blocked).
+`--mimics all` enables the whole arsenal (`ssh,tls,smtp,imap,smtps,imaps,directadmin`);
+pass a comma list to pick a subset. `--domain` is optional (a real Let's Encrypt cert
+once DNS points at the node; self-signed otherwise) and `--decoy-style` is
+`apache` (default) or `directadmin`. Updates are rollback-safe (`hedioum-tunnel
+update`, or `update --file <path>` when GitHub is blocked).
 
-### Diagnostics (on the Iran hub)
+**Editing a node in place** (only the flags you pass change; the token is kept unless
+`--token`/`--rotate-token`):
 
-    hedioum-tunnel probe     --node DE-01                 # per-mimic reachability of every endpoint
-    hedioum-tunnel speedtest --node DE-01 --mimic tls     # real un-shaped egress throughput
+    hedioum-tunnel edit-foreign --tls-port 2087 --decoy-style directadmin   # on the foreign
+    hedioum-tunnel edit-node --alias DE-01 --bw 12                          # on the Iran hub
+
+### Diagnostics
+
+    hedioum-tunnel probe     --node DE-01                 # per-mimic reachability of every endpoint (hub)
+    hedioum-tunnel speedtest --node DE-01 --mimic tls     # real un-shaped egress throughput (hub)
+    hedioum-tunnel check-ip                               # egress IP reputation: CLEAN / LIKELY-FLAGGED (foreign)
 
 ## ⚙️ Management Dashboard
 
@@ -67,7 +82,7 @@ To manage servers, view live connection status, or perform lifecycle operations,
 **Dashboard Capabilities:**
 - View active egress pools, per-node endpoints (mimic → target), and live DPI Evasion dynamics (Limits & Jitter).
 - Monitor real-time daemon logs for Scale-Up/Down events and bandwidth usage.
-- Add or Remove foreign egress nodes dynamically.
+- Add, **Edit**, or Remove foreign egress nodes dynamically (edit pre-fills each field with its current value — press Enter to keep it), and **Edit the foreign configuration** in place.
 - Run a **Speedtest** or **Probe** endpoints (per-mimic reachability) straight from the menu.
 - Perform a safe Self-Update (fetches latest GitHub release).
 - Completely Uninstall and purge the daemon.

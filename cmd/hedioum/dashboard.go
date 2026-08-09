@@ -37,11 +37,13 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 				"5. Remove Existing Egress Node",
 				"6. Run Speedtest to a Node",
 				"7. Probe Endpoints (per-mimic reachability)",
+				"8. Check This Server's IP Reputation",
 			)
 		} else {
 			options = append(options,
 				"3. Edit Foreign Configuration",
 				"4. Rotate Authentication Token",
+				"5. Check Egress IP Reputation",
 			)
 		}
 
@@ -137,6 +139,9 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 
 		case strings.Contains(action, "Probe Endpoints"):
 			runProbeMenu(cfg)
+
+		case strings.Contains(action, "IP Reputation"):
+			cmdCheckIP(nil)
 
 		case strings.Contains(action, "Rotate Authentication Token"):
 			cfg.AuthToken = sysutil.GenerateSecureToken()
