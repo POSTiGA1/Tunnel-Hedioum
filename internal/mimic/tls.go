@@ -79,7 +79,10 @@ func (m *TLSMimic) nextProtos() []string {
 	if len(m.NextProtos) > 0 {
 		return m.NextProtos
 	}
-	return []string{"h2", "http/1.1"}
+	// Advertise HTTP/1.1 only: the built-in decoys speak HTTP/1.1, so negotiating h2
+	// would leave a real browser/probe with an unparseable reply (empty page). The
+	// tunnel client ignores ALPN (it sends the channel-bound auth, not HTTP).
+	return []string{"http/1.1"}
 }
 
 // ProxyDecoy serves an unauthenticated peer a believable response — a local backend

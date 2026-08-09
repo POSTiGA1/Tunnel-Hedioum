@@ -115,13 +115,14 @@ func (cm *CertManager) ACMEConfigured() bool {
 	return cm.mgr != nil
 }
 
-// NextProtos returns the ALPN protocols the mimic's tls.Config should advertise. It
-// includes the ACME proto so TLS-ALPN-01 works on :443 without a separate port.
+// NextProtos returns the ALPN protocols the mimic's tls.Config should advertise.
+// HTTP/1.1 only (the decoys speak HTTP/1.1; advertising h2 would break a real
+// browser hitting the decoy), plus the ACME proto so TLS-ALPN-01 works on :443.
 func (cm *CertManager) NextProtos() []string {
 	if cm.ACMEConfigured() {
-		return []string{"h2", "http/1.1", acme.ALPNProto}
+		return []string{"http/1.1", acme.ALPNProto}
 	}
-	return []string{"h2", "http/1.1"}
+	return []string{"http/1.1"}
 }
 
 // HTTPChallengeHandler wraps the given fallback with autocert's HTTP-01 handler

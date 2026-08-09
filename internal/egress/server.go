@@ -140,14 +140,17 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 			Decoy:          mimic.WebDecoyFor(cfg.DecoyStyle),
 		}, nil
 	case "directadmin":
-		// The DirectAdmin panel persona on :2222. A self-signed certificate is
-		// AUTHENTIC here (real panels use one), so this listener never uses ACME; the
-		// decoy for unauthorized probes is the DirectAdmin login shell. An operator
-		// running a real panel can set ml.Decoy to proxy to it for perfect fidelity.
+		// The DirectAdmin panel persona on :2222. It presents the real (ACME) cert
+		// when a domain is configured — exactly like a well-run panel with a hostname
+		// certificate — and falls back to self-signed otherwise (also authentic for a
+		// default DirectAdmin install). The decoy for unauthorized probes is the
+		// DirectAdmin login; an operator running a real panel can set ml.Decoy to
+		// proxy to it for perfect fidelity.
 		return &mimic.TLSMimic{
 			Token:          cfg.AuthToken,
 			Filter:         filter,
-			GetCertificate: certMgr.SelfSignedCertificate,
+			GetCertificate: certMgr.GetCertificate,
+			NextProtos:     certMgr.NextProtos(),
 			DecoyAddr:      ml.Decoy,
 			Decoy:          mimic.ServeDirectAdminPanel,
 		}, nil

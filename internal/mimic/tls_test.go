@@ -82,6 +82,44 @@ func TestTLSMimicRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTLSMimicALPNIsHTTP11 guards the ALPN fix: a client offering h2 + http/1.1 must
+// negotiate http/1.1 (never h2), because the decoys speak HTTP/1.1 — negotiating h2
+// left real browsers with an empty page (found in live testing).
+func TestTLSMimicALPNIsHTTP11(t *testing.T) {
+	srv, ln := newTLSServer(t, "server-token")
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		if _, replay, err := srv.Accept(conn); err != nil {
+			srv.ProxyDecoy(replay)
+		}
+	}()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	tc := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, ServerName: "example", NextProtos: []string{"h2", "http/1.1"}})
+	if err := tc.Handshake(); err != nil {
+		t.Fatalf("tls handshake: %v", err)
+	}
+	if got := tc.ConnectionState().NegotiatedProtocol; got != "http/1.1" {
+		t.Fatalf("negotiated ALPN = %q, want http/1.1 (h2 breaks the decoy)", got)
+	}
+	if _, err := tc.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	tc.SetReadDeadline(time.Now().Add(4 * time.Second))
+	got, _ := io.ReadAll(tc)
+	if !bytes.Contains(got, []byte("200 OK")) {
+		t.Fatalf("decoy did not respond over the negotiated protocol: %q", got)
+	}
+}
+
 // TestTLSMimicWrongTokenToWebDecoy: a wrong token (or a browser) gets the web page.
 func TestTLSMimicWebDecoy(t *testing.T) {
 	srv, ln := newTLSServer(t, "server-token")
