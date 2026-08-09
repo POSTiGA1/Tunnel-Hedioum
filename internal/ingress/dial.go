@@ -24,8 +24,9 @@ func hubYamuxConfig() *yamux.Config {
 // clientMimicFor builds the client camouflage for an endpoint's mimic type.
 func clientMimicFor(ep config.Endpoint, token string) mimic.ClientMimic {
 	switch ep.Mimic {
-	case "tls", "smtps", "imaps":
-		// Implicit TLS (smtps/imaps share the plain TLS mimic, different port).
+	case "tls", "smtps", "imaps", "directadmin":
+		// Implicit TLS (smtps/imaps/directadmin share the plain TLS mimic, different
+		// ports). directadmin rides :2222 disguised as a DirectAdmin panel.
 		return &mimic.TLSClient{Token: token, ServerName: ep.ServerName}
 	case "smtp", "imap":
 		return &mimic.StartTLSClient{Proto: ep.Mimic, TLS: &mimic.TLSClient{Token: token, ServerName: ep.ServerName}}

@@ -13,56 +13,96 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
-// TLSMimic disguises the tunnel as an HTTPS server: a real TLS handshake (with a
-// self-signed cert) provides the single crypto layer, and a channel-bound token
-// auth (tlsauth.go) proves the peer without sending the token and without a
-// second encryption layer. Unauthenticated peers (browsers/probes) are served a
-// plausible web response, so :443 looks like an ordinary web host.
+// TLSMimic disguises the tunnel as an HTTPS server: a real TLS handshake provides
+// the single crypto layer, and a channel-bound token auth (tlsauth.go) proves the
+// peer without sending the token and without a second encryption layer. The
+// certificate is chosen per-handshake by GetCertificate — a real Let's Encrypt cert
+// (ACME) when a domain is configured, otherwise self-signed. The auth binds to the
+// certificate actually served on THIS handshake, so ACME renewal (which rotates the
+// cert) never breaks authentication. Unauthenticated peers (browsers/probes) are
+// served a plausible response, so the port looks like an ordinary web host / panel.
 type TLSMimic struct {
-	Token     string
-	Filter    *securestream.ReplayFilter
-	TLSConfig *tls.Config // server config carrying the self-signed cert
-	CertFP    [32]byte    // SHA-256 of our leaf cert (channel binding)
-	DecoyAddr string      // web backend for unauth peers; "" = built-in page
+	Token  string
+	Filter *securestream.ReplayFilter
+	// GetCertificate selects the server certificate for each ClientHello (required).
+	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	// NextProtos is the ALPN list to advertise (nil -> h2,http/1.1). When ACME is
+	// active it must include "acme-tls/1" so TLS-ALPN-01 challenges succeed on :443.
+	NextProtos []string
+	DecoyAddr  string         // web backend for unauth peers; "" uses Decoy/built-in
+	Decoy      func(net.Conn) // built-in decoy writer; nil -> ServeWebDecoy (Apache)
 }
 
 func (m *TLSMimic) Accept(conn net.Conn) (net.Conn, net.Conn, error) {
 	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
-	tlsConn := tls.Server(conn, m.TLSConfig)
+
+	// Capture the fingerprint of the leaf certificate actually served on this
+	// handshake, so the channel-bound auth binds to it (works for self-signed AND
+	// rotating ACME certs alike).
+	var servedFP [32]byte
+	var haveFP bool
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: m.nextProtos(),
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			c, err := m.GetCertificate(hello)
+			if err == nil && c != nil && len(c.Certificate) > 0 {
+				servedFP = sha256.Sum256(c.Certificate[0])
+				haveFP = true
+			}
+			return c, err
+		},
+	}
+	tlsConn := tls.Server(conn, cfg)
 	if err := tlsConn.Handshake(); err != nil {
 		// Not even a valid TLS ClientHello; nothing believable to serve.
 		return nil, conn, err
 	}
 	_ = conn.SetDeadline(time.Time{})
 
-	// Record the decrypted inner bytes so a non-client can be replayed to the web
-	// decoy; read the channel-bound auth through the recorder.
+	// Record the decrypted inner bytes so a non-client can be replayed to the decoy;
+	// read the channel-bound auth through the recorder.
 	rec := &RecorderConn{Conn: tlsConn, recording: true}
-	if err := serverVerifyTLS(tlsConn, rec, m.Token, m.CertFP, m.Filter); err != nil {
-		return nil, buildReplayConn(tlsConn, rec), err // ErrAuth -> web decoy
+	if !haveFP {
+		// No usable certificate was served (e.g. an ACME challenge handshake). Treat
+		// as unauthenticated and route to the decoy.
+		return nil, buildReplayConn(tlsConn, rec), securestream.ErrAuth
+	}
+	if err := serverVerifyTLS(tlsConn, rec, m.Token, servedFP, m.Filter); err != nil {
+		return nil, buildReplayConn(tlsConn, rec), err // ErrAuth -> decoy
 	}
 	rec.Stop()
 	return rec, nil, nil // yamux runs directly over the TLS conn (single crypto layer)
 }
 
-// ProxyDecoy serves an unauthenticated peer a believable web response — a local
-// backend if configured, otherwise a built-in minimal page.
+func (m *TLSMimic) nextProtos() []string {
+	if len(m.NextProtos) > 0 {
+		return m.NextProtos
+	}
+	return []string{"h2", "http/1.1"}
+}
+
+// ProxyDecoy serves an unauthenticated peer a believable response — a local backend
+// if configured (e.g. a real DirectAdmin panel for pixel-perfect fidelity),
+// otherwise the built-in Decoy page (or the Apache default if none is set).
 func (m *TLSMimic) ProxyDecoy(replay net.Conn) {
 	defer replay.Close()
-	if m.DecoyAddr == "" {
-		ServeWebDecoy(replay)
+	if m.DecoyAddr != "" {
+		if backend, err := net.DialTimeout("tcp", m.DecoyAddr, 5*time.Second); err == nil {
+			defer backend.Close()
+			errCh := make(chan error, 2)
+			go func() { _, e := io.Copy(backend, replay); errCh <- e }()
+			go func() { _, e := io.Copy(replay, backend); errCh <- e }()
+			<-errCh
+			return
+		}
+		// backend down: fall through to the built-in page so we still answer plausibly.
+	}
+	if m.Decoy != nil {
+		m.Decoy(replay)
 		return
 	}
-	backend, err := net.DialTimeout("tcp", m.DecoyAddr, 5*time.Second)
-	if err != nil {
-		ServeWebDecoy(replay) // backend down: still answer plausibly
-		return
-	}
-	defer backend.Close()
-	errCh := make(chan error, 2)
-	go func() { _, e := io.Copy(backend, replay); errCh <- e }()
-	go func() { _, e := io.Copy(replay, backend); errCh <- e }()
-	<-errCh
+	ServeWebDecoy(replay)
 }
 
 func (m *TLSMimic) Name() string { return "tls" }

@@ -42,8 +42,8 @@ func TestValidTarget(t *testing.T) {
 }
 
 func TestExpandMimics(t *testing.T) {
-	if got, _ := expandMimics("all"); len(got) != 6 || got[0] != "ssh" || got[5] != "imaps" {
-		t.Fatalf("all => %v (want all 6 mimics)", got)
+	if got, _ := expandMimics("all"); len(got) != 7 || got[0] != "ssh" || got[6] != "directadmin" {
+		t.Fatalf("all => %v (want all 7 mimics ending in directadmin)", got)
 	}
 	if got, _ := expandMimics("tls"); len(got) != 1 || got[0] != "tls" {
 		t.Fatalf("tls => %v", got)
@@ -51,13 +51,13 @@ func TestExpandMimics(t *testing.T) {
 	if got, _ := expandMimics("ssh,tls"); len(got) != 2 {
 		t.Fatalf("ssh,tls => %v", got)
 	}
-	// Implicit-TLS and STARTTLS mail mimics are all valid selectable types.
-	for _, m := range []string{"smtp", "imap", "smtps", "imaps"} {
+	// Implicit-TLS, STARTTLS mail, and the DirectAdmin mimic are all valid types.
+	for _, m := range []string{"smtp", "imap", "smtps", "imaps", "directadmin"} {
 		if got, err := expandMimics(m); err != nil || len(got) != 1 || got[0] != m {
 			t.Fatalf("%s => %v, %v", m, got, err)
 		}
 	}
-	if got, _ := expandMimics("ssh,tls,smtp,imap,smtps,imaps"); len(got) != 6 {
+	if got, _ := expandMimics("ssh,tls,smtp,imap,smtps,imaps,directadmin"); len(got) != 7 {
 		t.Fatalf("all-explicit => %v", got)
 	}
 	if _, err := expandMimics("bogus"); err == nil {

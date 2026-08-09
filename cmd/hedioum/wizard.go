@@ -127,6 +127,35 @@ func setupForeignNode(cfg *config.AppConfig) {
 		}
 	}
 
+	// TLS certificate: a real domain (Let's Encrypt) vs self-signed.
+	color.HiWhite("\n--- TLS Certificate ---")
+	color.White("  A domain pointed at THIS server lets the tunnel present a genuine Let's")
+	color.White("  Encrypt certificate — far harder to fingerprint than a self-signed one.")
+	color.White("  Without a domain everything still works, using a self-signed certificate.")
+	domain := ""
+	survey.AskOne(&survey.Input{Message: "Domain for a real certificate (blank = self-signed):"}, &domain)
+	cfg.Domain = strings.TrimSpace(domain)
+	if cfg.Domain != "" {
+		email := ""
+		survey.AskOne(&survey.Input{Message: "Let's Encrypt account email (optional):"}, &email)
+		cfg.ACMEEmail = strings.TrimSpace(email)
+	} else {
+		color.Yellow("  [!] Using a self-signed certificate. A domain is recommended when possible.")
+	}
+
+	// Camouflage persona shown to unauthorized probes / scanners.
+	persona := ""
+	survey.AskOne(&survey.Select{
+		Message: "Decoy persona for unauthorized probes:",
+		Options: []string{"apache (Apache default page)", "directadmin (DirectAdmin hosting box)"},
+		Default: "apache (Apache default page)",
+	}, &persona)
+	if strings.HasPrefix(persona, "directadmin") {
+		cfg.DecoyStyle = "directadmin"
+	} else {
+		cfg.DecoyStyle = "apache"
+	}
+
 	color.HiWhite("\n[INFO] Provisioning Summary:")
 	labels := make([]string, len(mimicList))
 	for i, m := range mimicList {
@@ -291,7 +320,7 @@ func safeAtoi(s string, defaultVal int) int {
 }
 
 // allMimics is the full camouflage arsenal, in the order the wizard offers it.
-var allMimics = []string{"ssh", "tls", "smtp", "imap", "smtps", "imaps"}
+var allMimics = []string{"ssh", "tls", "smtp", "imap", "smtps", "imaps", "directadmin"}
 
 // promptMimics shows a checkbox selection of camouflage protocols and returns the
 // chosen types. The first option ("all") selects the whole arsenal. Never returns
@@ -303,7 +332,7 @@ func promptMimics() []string {
 		Message: "Select camouflage protocols (Space toggles, Enter confirms):",
 		Options: append([]string{allOpt}, allMimics...),
 		Default: []string{"ssh", "tls"},
-		Help:    "tls=HTTPS:443, ssh=22, smtp=587, imap=143, smtps=465, imaps=993. Run several for a stronger, shifting signature.",
+		Help:    "tls=HTTPS:443, ssh=22, smtp=587, imap=143, smtps=465, imaps=993, directadmin=2222. Run several for a stronger, shifting signature.",
 	}, &sel)
 
 	chosen := map[string]bool{}
@@ -341,6 +370,8 @@ func mimicPort(ty string, sshPort int) int {
 		return 465
 	case "imaps":
 		return 993
+	case "directadmin":
+		return 2222
 	}
 	return 0
 }
