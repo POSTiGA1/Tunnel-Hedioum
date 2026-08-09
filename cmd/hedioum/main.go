@@ -23,7 +23,7 @@ import (
 // so v0.5 and v0.6 nodes interoperate): structured slog logging, non-interactive
 // CLI + self-install, configurable decoy/listen ports, buffered banner reads, and
 // a ghp.ci-free, signature-free-but-robust self-update.
-const AppVersion = "v0.7.6"
+const AppVersion = "v0.7.7"
 
 func main() {
 	// Management subcommands (a non-flag first argument): install, setup-*, etc.

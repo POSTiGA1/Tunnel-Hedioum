@@ -25,8 +25,10 @@ func TestCertManagerSelfSignedFallback(t *testing.T) {
 	if c2, _ := cm.SelfSignedCertificate(&tls.ClientHelloInfo{ServerName: "anything"}); c2 == nil || len(c2.Certificate) == 0 {
 		t.Fatal("SelfSignedCertificate must always serve the self-signed cert")
 	}
-	if got := cm.NextProtos(); len(got) != 2 || got[0] != "h2" {
-		t.Fatalf("NextProtos without ACME = %v", got)
+	// HTTP/1.1 only (never h2 — the decoys speak HTTP/1.1; h2 would break a browser
+	// hitting the decoy).
+	if got := cm.NextProtos(); len(got) != 1 || got[0] != "http/1.1" {
+		t.Fatalf("NextProtos without ACME = %v, want [http/1.1]", got)
 	}
 }
 
@@ -42,8 +44,8 @@ func TestCertManagerACMEConfigured(t *testing.T) {
 		t.Fatal("a domain must configure ACME")
 	}
 	got := cm.NextProtos()
-	if len(got) != 3 || got[2] != acme.ALPNProto {
-		t.Fatalf("NextProtos with ACME must include %q, got %v", acme.ALPNProto, got)
+	if len(got) != 2 || got[0] != "http/1.1" || got[1] != acme.ALPNProto {
+		t.Fatalf("NextProtos with ACME must be [http/1.1, %q], got %v", acme.ALPNProto, got)
 	}
 	// active is false at construction (DNS not yet confirmed) -> self-signed served.
 	c, err := cm.GetCertificate(&tls.ClientHelloInfo{ServerName: "example.com"})
