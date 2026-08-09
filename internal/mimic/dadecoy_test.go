@@ -51,7 +51,11 @@ func TestDirectAdminLoginPage(t *testing.T) {
 		"Please enter your password",
 		"Sign in",
 		"/evo/assets/logo.fe968txS.svg",
+		"/evo/assets/logo2.AfEZecTW.svg", // dark-mode logo
 		"/evo/assets/background.Cx34YJbp.svg",
+		"/evo/assets/background-dark.BawLIQ0N.svg",     // dark-mode background
+		"prefers-color-scheme: dark",                   // light + dark support
+		"Hmm, login details do not seem to be correct", // real panel error text
 		"X-Frame-Options: sameorigin",
 		"X-Content-Type-Options: nosniff",
 		"Cache-Control: no-cache",
@@ -69,7 +73,9 @@ func TestDirectAdminLoginPage(t *testing.T) {
 func TestDirectAdminAssets(t *testing.T) {
 	cases := []struct{ req, ct string }{
 		{"GET /evo/assets/logo.fe968txS.svg", "image/svg+xml"},
+		{"GET /evo/assets/logo2.AfEZecTW.svg", "image/svg+xml"},
 		{"GET /evo/assets/background.Cx34YJbp.svg", "image/svg+xml"},
+		{"GET /evo/assets/background-dark.BawLIQ0N.svg", "image/svg+xml"},
 		{"GET /evo/assets/favicon.CDLA4ANV.png", "image/png"},
 	}
 	for _, c := range cases {
