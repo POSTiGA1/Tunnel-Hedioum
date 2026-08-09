@@ -23,8 +23,12 @@ func runSubcommand(name string, args []string) {
 		cmdSetupIran(args)
 	case "add-node":
 		cmdAddNode(args)
+	case "edit-node":
+		cmdEditNode(args)
 	case "remove-node":
 		cmdRemoveNode(args)
+	case "edit-foreign":
+		cmdEditForeign(args)
 	case "install":
 		cmdInstall(args)
 	case "uninstall":
@@ -35,6 +39,8 @@ func runSubcommand(name string, args []string) {
 		cmdSpeedtest(args)
 	case "probe":
 		cmdProbe(args)
+	case "check-ip":
+		cmdCheckIP(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -58,13 +64,18 @@ Usage:
       --listen-port N (default 22)  --decoy-port N (default 2022)
       --egress-mode ipv4|ipv6|dual  --egress-bind-ip IP  --move-ssh  --token HEX
 
+  hedioum-tunnel edit-foreign [flags]    Edit the foreign config in place (only the
+      flags you pass change; token kept unless --token/--rotate-token)
   hedioum-tunnel setup-iran   [flags]    Write the Iran (hub) config with one node
   hedioum-tunnel add-node     [flags]    Append a foreign node to the hub config
       --alias NAME  --target HOST:PORT  --socks-port N  --token HEX
       [--min N --max N --bw N --jitter N]
+  hedioum-tunnel edit-node --alias NAME [flags]  Edit a node in place (only the flags
+      you pass change; token kept unless --token/--rotate-token)
   hedioum-tunnel remove-node --alias NAME
   hedioum-tunnel speedtest [--node NAME] [--mimic ssh|tls] [--seconds N] [--dir down|up|both]
   hedioum-tunnel probe     [--node NAME]    Test each endpoint (mimic) and report reachability
+  hedioum-tunnel check-ip                   Report the egress IP's reputation (clean vs flagged)
 
 Flags for the default mode:
   --reset            Wipe the config and re-run the setup wizard

@@ -33,12 +33,16 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 		if cfg.Role == "iran" {
 			options = append(options,
 				"3. Add New Foreign Egress Node",
-				"4. Remove Existing Egress Node",
-				"5. Run Speedtest to a Node",
-				"6. Probe Endpoints (per-mimic reachability)",
+				"4. Edit Existing Egress Node",
+				"5. Remove Existing Egress Node",
+				"6. Run Speedtest to a Node",
+				"7. Probe Endpoints (per-mimic reachability)",
 			)
 		} else {
-			options = append(options, "3. Rotate Authentication Token")
+			options = append(options,
+				"3. Edit Foreign Configuration",
+				"4. Rotate Authentication Token",
+			)
 		}
 
 		// Enterprise Features added to the bottom of the menu
@@ -100,6 +104,16 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 
 		case strings.Contains(action, "Add New Foreign Egress Node"):
 			setupIranNode(cfg, false)
+			saveAndRestart(cfg)
+
+		case strings.Contains(action, "Edit Existing Egress Node"):
+			if node, ok := pickNode(cfg, "Select node to edit:"); ok {
+				editIranNode(cfg, node)
+				saveAndRestart(cfg)
+			}
+
+		case strings.Contains(action, "Edit Foreign Configuration"):
+			editForeignConfig(cfg)
 			saveAndRestart(cfg)
 
 		case strings.Contains(action, "Remove Existing Egress Node"):

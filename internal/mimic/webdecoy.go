@@ -1,8 +1,11 @@
 package mimic
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"net"
+	"net/http"
 	"time"
 )
 
@@ -50,39 +53,81 @@ const apacheDefaultPage = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transiti
 // verbatim from a live DirectAdmin server.
 const daWebDefault = "<html>webserver is functioning normally</html>\n"
 
-// ServeWebDecoy answers any connection with the Apache2 Ubuntu default page, so a
-// port reads as an ordinary web host to scanners and IP-reputation checks. Used
-// both by the TLS mimic's decoy (inside TLS) and by the plaintext :80 decoy.
-func ServeWebDecoy(conn net.Conn) {
+// DecoyProfile is the per-install-stable identity of the web decoy. The response a
+// static-file web server sends is otherwise byte-identical across every Hedioum
+// node — a fleet-wide signature. This derives a realistic-but-unique server version,
+// Last-Modified date and ETag suffix from the node's (secret) auth token, so no two
+// installs share the same values, while any single node stays stable over time.
+type DecoyProfile struct {
+	apacheServer string // "Apache/2.4.xx (Ubuntu)"
+	lastModified string // RFC1123-GMT
+	etagSuffix   string // hex, per-install (second half of the ETag)
+}
+
+// apacheVersions are all real Apache-on-Ubuntu Server strings (distro packages), so
+// a chosen value never looks synthetic.
+var apacheVersions = []string{
+	"Apache/2.4.52 (Ubuntu)", // 22.04
+	"Apache/2.4.58 (Ubuntu)", // 24.04
+	"Apache/2.4.41 (Ubuntu)", // 20.04
+	"Apache/2.4.57 (Ubuntu)",
+	"Apache/2.4.29 (Ubuntu)", // 18.04
+}
+
+// NewDecoyProfile derives a stable, unique decoy identity from a seed (the auth token).
+func NewDecoyProfile(seed string) DecoyProfile {
+	h := sha256.Sum256([]byte("hedioum-decoy\x00" + seed))
+	ver := apacheVersions[int(h[0])%len(apacheVersions)]
+	daysAgo := int(binary.BigEndian.Uint16(h[1:3]))%700 + 30 // 30..730 days
+	secs := int(binary.BigEndian.Uint16(h[3:5])) % 86400
+	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	lm := base.Add(-time.Duration(daysAgo)*24*time.Hour - time.Duration(secs)*time.Second)
+	return DecoyProfile{
+		apacheServer: ver,
+		lastModified: lm.UTC().Format(http.TimeFormat), // "... GMT" (not "UTC")
+		etagSuffix:   fmt.Sprintf("%x", binary.BigEndian.Uint64(h[8:16])),
+	}
+}
+
+// defaultDecoyProfile backs the package-level ServeWebDecoy fallback (used only when
+// no seeded profile is wired, e.g. the TLS mimic's built-in default and in tests).
+var defaultDecoyProfile = NewDecoyProfile("")
+
+// writeStatic emits the full header set a real web server returns for a static file
+// (Last-Modified / ETag / Accept-Ranges), so the response shape is not itself a tell.
+func (p DecoyProfile) writeStatic(conn net.Conn, server, contentType, extra, body string) {
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, _ = conn.Read(make([]byte, 4096)) // consume (part of) the request line/headers
+	etag := fmt.Sprintf("\"%x-%s\"", len(body), p.etagSuffix)
 	resp := fmt.Sprintf(
-		"HTTP/1.1 200 OK\r\nDate: %s\r\nServer: Apache/2.4.52 (Ubuntu)\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
-		time.Now().UTC().Format(time.RFC1123), len(apacheDefaultPage), apacheDefaultPage,
+		"HTTP/1.1 200 OK\r\nDate: %s\r\nServer: %s\r\nLast-Modified: %s\r\nETag: %s\r\n"+
+			"Accept-Ranges: bytes\r\nContent-Length: %d\r\n%sContent-Type: %s\r\nConnection: close\r\n\r\n%s",
+		time.Now().UTC().Format(http.TimeFormat), server, p.lastModified, etag, len(body), extra, contentType, body,
 	)
 	_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 	_, _ = conn.Write([]byte(resp))
 }
 
-// ServeDirectAdminWeb answers with the exact page a DirectAdmin server serves on its
-// web ports — "webserver is functioning normally" with an Apache/2 signature — so
-// the box reads as an ordinary DirectAdmin hosting server to scanners.
-func ServeDirectAdminWeb(conn net.Conn) {
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, _ = conn.Read(make([]byte, 4096))
-	resp := fmt.Sprintf(
-		"HTTP/1.1 200 OK\r\nDate: %s\r\nServer: Apache/2\r\nLast-Modified: Mon, 27 Oct 2025 18:36:27 GMT\r\nAccept-Ranges: bytes\r\nContent-Length: %d\r\nVary: User-Agent\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n%s",
-		time.Now().UTC().Format(time.RFC1123), len(daWebDefault), daWebDefault,
-	)
-	_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	_, _ = conn.Write([]byte(resp))
+// ServeApache answers with the Apache2 Ubuntu default page (per-install Server/date/ETag).
+func (p DecoyProfile) ServeApache(conn net.Conn) {
+	p.writeStatic(conn, p.apacheServer, "text/html; charset=UTF-8", "", apacheDefaultPage)
 }
 
-// WebDecoyFor returns the raw (net.Conn) web decoy for a persona style. Unknown or
-// empty styles fall back to the Apache default.
-func WebDecoyFor(style string) func(net.Conn) {
+// ServeDirectAdminWeb answers with the exact page a DirectAdmin box serves on its web
+// ports. Server stays "Apache/2" (shared by all real DA installs — blending in), with
+// per-install date/ETag.
+func (p DecoyProfile) ServeDirectAdminWeb(conn net.Conn) {
+	p.writeStatic(conn, "Apache/2", "text/html", "Vary: User-Agent\r\n", daWebDefault)
+}
+
+// WebDecoyFor returns this profile's raw (net.Conn) web decoy for a persona style.
+func (p DecoyProfile) WebDecoyFor(style string) func(net.Conn) {
 	if style == "directadmin" {
-		return ServeDirectAdminWeb
+		return p.ServeDirectAdminWeb
 	}
-	return ServeWebDecoy
+	return p.ServeApache
 }
+
+// ServeWebDecoy is the package-level Apache fallback (default profile), used by the
+// TLS mimic when no seeded decoy is configured.
+func ServeWebDecoy(conn net.Conn) { defaultDecoyProfile.ServeApache(conn) }
