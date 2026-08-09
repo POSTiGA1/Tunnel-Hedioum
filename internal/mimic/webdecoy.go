@@ -45,6 +45,11 @@ const apacheDefaultPage = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transiti
   </body>
 </html>`
 
+// daWebDefault is exactly what a real DirectAdmin box serves on its web ports
+// (:80/:443) when hit without the panel port — a 47-byte static file. Captured
+// verbatim from a live DirectAdmin server.
+const daWebDefault = "<html>webserver is functioning normally</html>\n"
+
 // ServeWebDecoy answers any connection with the Apache2 Ubuntu default page, so a
 // port reads as an ordinary web host to scanners and IP-reputation checks. Used
 // both by the TLS mimic's decoy (inside TLS) and by the plaintext :80 decoy.
@@ -57,4 +62,27 @@ func ServeWebDecoy(conn net.Conn) {
 	)
 	_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 	_, _ = conn.Write([]byte(resp))
+}
+
+// ServeDirectAdminWeb answers with the exact page a DirectAdmin server serves on its
+// web ports — "webserver is functioning normally" with an Apache/2 signature — so
+// the box reads as an ordinary DirectAdmin hosting server to scanners.
+func ServeDirectAdminWeb(conn net.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _ = conn.Read(make([]byte, 4096))
+	resp := fmt.Sprintf(
+		"HTTP/1.1 200 OK\r\nDate: %s\r\nServer: Apache/2\r\nLast-Modified: Mon, 27 Oct 2025 18:36:27 GMT\r\nAccept-Ranges: bytes\r\nContent-Length: %d\r\nVary: User-Agent\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n%s",
+		time.Now().UTC().Format(time.RFC1123), len(daWebDefault), daWebDefault,
+	)
+	_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	_, _ = conn.Write([]byte(resp))
+}
+
+// WebDecoyFor returns the raw (net.Conn) web decoy for a persona style. Unknown or
+// empty styles fall back to the Apache default.
+func WebDecoyFor(style string) func(net.Conn) {
+	if style == "directadmin" {
+		return ServeDirectAdminWeb
+	}
+	return ServeWebDecoy
 }

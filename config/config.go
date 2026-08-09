@@ -29,6 +29,18 @@ type AppConfig struct {
 	// like an ordinary web host to IP-reputation scanners. Default 80; a negative
 	// value disables it.
 	HTTPDecoyPort int `json:"http_decoy_port,omitempty"`
+	// Domain, when set, makes the TLS mimic present a real Let's Encrypt certificate
+	// for this domain (via ACME) instead of the self-signed cert — the strongest
+	// defence against passive cert fingerprinting. Requires the domain's A/AAAA
+	// records to point at this server. Empty = self-signed (still works, less safe).
+	Domain string `json:"domain,omitempty"`
+	// ACMEEmail is the optional Let's Encrypt account email (expiry notices).
+	ACMEEmail string `json:"acme_email,omitempty"`
+	// DecoyStyle selects the camouflage persona served to unauthorized probes:
+	// "apache" (default, the Apache2 Ubuntu default page) or "directadmin" (a
+	// DirectAdmin hosting box — "webserver is functioning normally" on the web ports
+	// and the DirectAdmin panel on :2222).
+	DecoyStyle string `json:"decoy_style,omitempty"`
 	// Mimics lists the camouflage listeners the foreign runs (SSH, TLS, ...). If
 	// empty, a single SSH listener is synthesized from ForeignListenPort/DecoyPort.
 	Mimics []MimicListener `json:"mimics,omitempty"`
@@ -119,6 +131,9 @@ func parseConfig(data []byte) (*AppConfig, error) {
 	}
 	if cfg.Role == "foreign" && cfg.HTTPDecoyPort == 0 {
 		cfg.HTTPDecoyPort = 80 // default: serve an Apache decoy on :80 (negative = off)
+	}
+	if cfg.Role == "foreign" && cfg.DecoyStyle == "" {
+		cfg.DecoyStyle = "apache" // default persona (backward compatible)
 	}
 	// Synthesize a single SSH listener from the legacy fields if none configured,
 	// so v0.6 foreign configs keep working unchanged.

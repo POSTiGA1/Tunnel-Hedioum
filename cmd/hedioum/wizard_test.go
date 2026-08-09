@@ -7,7 +7,7 @@ func TestMimicPort(t *testing.T) {
 	if got := mimicPort("ssh", 2200); got != 2200 {
 		t.Errorf("ssh port = %d, want 2200 (caller-set)", got)
 	}
-	want := map[string]int{"tls": 443, "smtp": 587, "imap": 143, "smtps": 465, "imaps": 993}
+	want := map[string]int{"tls": 443, "smtp": 587, "imap": 143, "smtps": 465, "imaps": 993, "directadmin": 2222}
 	for ty, p := range want {
 		if got := mimicPort(ty, 22); got != p {
 			t.Errorf("mimicPort(%q) = %d, want %d", ty, got, p)
@@ -29,9 +29,9 @@ func TestContainsStr(t *testing.T) {
 }
 
 // TestAllMimicsComplete guards that the wizard's arsenal list stays in sync with
-// the six supported mimic types (so "all" really means all).
+// the supported mimic types (so "all" really means all).
 func TestAllMimicsComplete(t *testing.T) {
-	want := map[string]bool{"ssh": true, "tls": true, "smtp": true, "imap": true, "smtps": true, "imaps": true}
+	want := map[string]bool{"ssh": true, "tls": true, "smtp": true, "imap": true, "smtps": true, "imaps": true, "directadmin": true}
 	if len(allMimics) != len(want) {
 		t.Fatalf("allMimics = %v, want %d types", allMimics, len(want))
 	}

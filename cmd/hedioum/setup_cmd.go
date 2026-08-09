@@ -19,17 +19,17 @@ import (
 // different mimic sets).
 func expandMimics(spec string) ([]string, error) {
 	if spec == "all" {
-		return []string{"ssh", "tls", "smtp", "imap", "smtps", "imaps"}, nil
+		return []string{"ssh", "tls", "smtp", "imap", "smtps", "imaps", "directadmin"}, nil
 	}
 	var out []string
 	for _, p := range strings.Split(spec, ",") {
 		p = strings.TrimSpace(p)
 		switch p {
-		case "ssh", "tls", "smtp", "imap", "smtps", "imaps":
+		case "ssh", "tls", "smtp", "imap", "smtps", "imaps", "directadmin":
 			out = append(out, p)
 		case "":
 		default:
-			return nil, fmt.Errorf("unknown mimic %q (want ssh|tls|smtp|imap|smtps|imaps|all)", p)
+			return nil, fmt.Errorf("unknown mimic %q (want ssh|tls|smtp|imap|smtps|imaps|directadmin|all)", p)
 		}
 	}
 	if len(out) == 0 {
@@ -58,14 +58,24 @@ func cmdSetupForeign(args []string) {
 	imapPort := fs.Int("imap-port", 143, "IMAP (STARTTLS) mimic public port")
 	smtpsPort := fs.Int("smtps-port", 465, "SMTPS (implicit TLS) mimic public port")
 	imapsPort := fs.Int("imaps-port", 993, "IMAPS (implicit TLS) mimic public port")
+	daPort := fs.Int("directadmin-port", 2222, "DirectAdmin panel mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI/CN (optional)")
-	mimics := fs.String("mimics", "ssh", "camouflage: ssh|tls|smtp|imap|smtps|imaps|all or a comma list")
+	mimics := fs.String("mimics", "ssh", "camouflage: ssh|tls|smtp|imap|smtps|imaps|directadmin|all or a comma list")
+	domain := fs.String("domain", "", "real domain for a Let's Encrypt cert (recommended; empty = self-signed)")
+	acmeEmail := fs.String("acme-email", "", "Let's Encrypt account email (optional)")
+	decoyStyle := fs.String("decoy-style", "apache", "camouflage persona: apache|directadmin")
 	egressMode := fs.String("egress-mode", "ipv4", "egress family: ipv4|ipv6|dual")
 	bindIP := fs.String("egress-bind-ip", "", "optional egress source IP")
 	moveSSH := fs.Bool("move-ssh", false, "relocate OpenSSH to --decoy-port")
-	httpDecoyPort := fs.Int("http-decoy-port", 80, "plaintext Apache decoy port (0 to disable)")
+	httpDecoyPort := fs.Int("http-decoy-port", 80, "plaintext web decoy port (0 to disable)")
 	token := fs.String("token", "", "auth token (generated if empty)")
 	_ = fs.Parse(args)
+
+	switch *decoyStyle {
+	case "apache", "directadmin":
+	default:
+		fail("--decoy-style must be apache or directadmin")
+	}
 
 	for label, p := range map[string]int{"listen-port": *sshPort, "decoy-port": *decoyPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort, "smtps-port": *smtpsPort, "imaps-port": *imapsPort} {
 		if err := validPort(p); err != nil {
@@ -111,6 +121,11 @@ func cmdSetupForeign(args []string) {
 			mimicList = append(mimicList, config.MimicListener{Type: "smtps", Port: *smtpsPort, ServerName: *tlsServerName})
 		case "imaps":
 			mimicList = append(mimicList, config.MimicListener{Type: "imaps", Port: *imapsPort, ServerName: *tlsServerName})
+		case "directadmin":
+			if err := validPort(*daPort); err != nil {
+				fail("--directadmin-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "directadmin", Port: *daPort, ServerName: *tlsServerName})
 		}
 	}
 	if *moveSSH {
@@ -134,6 +149,9 @@ func cmdSetupForeign(args []string) {
 		ForeignListenPort: *sshPort,
 		DecoyPort:         *decoyPort,
 		HTTPDecoyPort:     httpDecoy,
+		Domain:            *domain,
+		ACMEEmail:         *acmeEmail,
+		DecoyStyle:        *decoyStyle,
 		EgressIPMode:      *egressMode,
 		EgressBindIP:      *bindIP,
 		AuthToken:         tok,
@@ -143,6 +161,13 @@ func cmdSetupForeign(args []string) {
 		fail("failed to save config: %v", err)
 	}
 	color.Green("[✓] Foreign config written (mimics: %s, egress %s).", strings.Join(types, ","), *egressMode)
+	if *domain == "" {
+		color.Yellow("[!] No domain set: the TLS mimic will use a SELF-SIGNED certificate.")
+		color.Yellow("    For much stronger camouflage, point a domain's A/AAAA record at this")
+		color.Yellow("    server and re-run with --domain <name> to get a real Let's Encrypt cert.")
+	} else {
+		color.Green("[✓] Domain %s: a real Let's Encrypt cert will be obtained once DNS points here.", *domain)
+	}
 	fmt.Printf("Auth Token: %s\n", tok)
 	// Apply immediately: without a restart the daemon keeps its old config (old
 	// mimics AND old token), which silently breaks the link after re-provisioning.
@@ -165,7 +190,8 @@ func cmdAddNode(args []string) {
 	imapPort := fs.Int("imap-port", 143, "foreign IMAP (STARTTLS) mimic port")
 	smtpsPort := fs.Int("smtps-port", 465, "foreign SMTPS (implicit TLS) mimic port")
 	imapsPort := fs.Int("imaps-port", 993, "foreign IMAPS (implicit TLS) mimic port")
-	tlsServerName := fs.String("tls-servername", "", "TLS SNI")
+	daPort := fs.Int("directadmin-port", 2222, "foreign DirectAdmin panel mimic port")
+	tlsServerName := fs.String("tls-servername", "", "TLS SNI (set to the foreign's domain for a real cert)")
 	socksPort := fs.Int("socks-port", 0, "local SOCKS5 bind port")
 	token := fs.String("token", "", "auth token from the foreign node")
 	profile := fs.String("profile", "balanced", "throughput profile: balanced|high-speed")
@@ -200,7 +226,7 @@ func cmdAddNode(args []string) {
 				fail("--%s: %v", label, err)
 			}
 		}
-		portFor := map[string]int{"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort, "smtps": *smtpsPort, "imaps": *imapsPort}
+		portFor := map[string]int{"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort, "smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort}
 		for _, ty := range types {
 			sni := ""
 			if ty != "ssh" {

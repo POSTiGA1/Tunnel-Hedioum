@@ -1,12 +1,12 @@
 package egress
 
 import (
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -47,51 +47,60 @@ func StartForeignDaemon(cfg *config.AppConfig) {
 	if cfg.EgressBindIP != "" {
 		egressBindIP = net.ParseIP(cfg.EgressBindIP)
 	}
-	slog.Info("egress starting", "egress_mode", egressMode, "mimics", len(cfg.Mimics))
+	slog.Info("egress starting", "egress_mode", egressMode, "mimics", len(cfg.Mimics), "decoy_style", cfg.DecoyStyle, "domain", cfg.Domain)
+
+	// One certificate manager for the whole daemon: a real Let's Encrypt cert (ACME)
+	// when a domain is configured and points here, otherwise self-signed. Shared by
+	// all TLS-family listeners so there is a single ACME account/cache.
+	certMgr, err := tlscert.NewCertManager(tlsCertDir, cfg.Domain, cfg.ACMEEmail, cfg.Domain)
+	if err != nil {
+		slog.Error("failed to initialize certificate manager", "err", err)
+		return
+	}
 
 	// One replay filter is shared across listeners (SSH salts and TLS nonces are
 	// distinct high-entropy values).
 	replayFilter := securestream.NewReplayFilter(0)
 
 	for _, ml := range cfg.Mimics {
-		go startMimicListener(cfg, ml, replayFilter)
+		go startMimicListener(cfg, ml, replayFilter, certMgr)
 	}
 
-	// Optional plaintext HTTP decoy: makes the box look like an ordinary Apache
-	// web host to IP-reputation scanners hitting :80 (does nothing else).
+	// Plaintext :80 server: serves the ACME HTTP-01 challenge, redirects to HTTPS
+	// when a domain is set, and otherwise answers with the persona's default page —
+	// so the box looks like an ordinary web host to IP-reputation scanners.
 	if cfg.HTTPDecoyPort > 0 {
-		go startHTTPDecoy(cfg.HTTPDecoyPort)
+		go startHTTPServer(cfg.HTTPDecoyPort, certMgr, cfg)
 	}
 
 	sysutil.WaitForTerminationSignal() // block until terminated (see helper)
 }
 
-// startHTTPDecoy binds a plaintext port (default 80) and answers every connection
-// with the Apache2 Ubuntu default page — pure camouflage, no tunnel.
-func startHTTPDecoy(port int) {
-	listenAddr := fmt.Sprintf(":%d", port)
-	listener, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		// Something already owns :80 (a real web server) — that is fine, leave it be.
-		slog.Warn("HTTP decoy not started", "addr", listenAddr, "err", err)
-		return
+// startHTTPServer runs the plaintext :80 endpoint: ACME HTTP-01 challenge handling,
+// then either a 301 redirect to HTTPS (domain configured) or the persona's default
+// page (no domain).
+func startHTTPServer(port int, certMgr *tlscert.CertManager, cfg *config.AppConfig) {
+	var fallback http.Handler
+	if cfg.Domain != "" {
+		fallback = mimic.RedirectHTTPSHandler(cfg.Domain)
+	} else {
+		fallback = mimic.WebDefaultHTTPHandler(cfg.DecoyStyle)
 	}
-	slog.Info("HTTP decoy active", "addr", listenAddr)
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			continue
-		}
-		go func(c net.Conn) {
-			defer c.Close()
-			mimic.ServeWebDecoy(c)
-		}(conn)
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           certMgr.HTTPChallengeHandler(fallback),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	slog.Info("HTTP :80 active", "addr", srv.Addr, "style", cfg.DecoyStyle, "acme", certMgr.ACMEConfigured())
+	if err := srv.ListenAndServe(); err != nil {
+		// Something already owns :80 (a real web server) — that is fine, leave it be.
+		slog.Warn("HTTP :80 not served", "addr", srv.Addr, "err", err)
 	}
 }
 
 // startMimicListener binds one port and serves it with the given mimic.
-func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) {
-	m, err := buildServerMimic(cfg, ml, filter)
+func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter, certMgr *tlscert.CertManager) {
+	m, err := buildServerMimic(cfg, ml, filter, certMgr)
 	if err != nil {
 		slog.Error("failed to build mimic", "type", ml.Type, "err", err)
 		return
@@ -116,20 +125,43 @@ func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *
 }
 
 // buildServerMimic constructs the server-side camouflage for a listener.
-func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) (mimic.ServerMimic, error) {
+func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter, certMgr *tlscert.CertManager) (mimic.ServerMimic, error) {
 	switch ml.Type {
 	case "tls", "smtps", "imaps":
 		// Implicit TLS: the wire is TLS from the first byte (like HTTPS/IMAPS/SMTPS).
 		// smtps/imaps are the same mimic as tls, just on their conventional ports.
-		return buildServerTLS(cfg, ml, filter)
+		// These present the real (ACME) cert when a domain is configured.
+		return &mimic.TLSMimic{
+			Token:          cfg.AuthToken,
+			Filter:         filter,
+			GetCertificate: certMgr.GetCertificate,
+			NextProtos:     certMgr.NextProtos(),
+			DecoyAddr:      ml.Decoy, // "" -> built-in persona page
+			Decoy:          mimic.WebDecoyFor(cfg.DecoyStyle),
+		}, nil
+	case "directadmin":
+		// The DirectAdmin panel persona on :2222. A self-signed certificate is
+		// AUTHENTIC here (real panels use one), so this listener never uses ACME; the
+		// decoy for unauthorized probes is the DirectAdmin login shell. An operator
+		// running a real panel can set ml.Decoy to proxy to it for perfect fidelity.
+		return &mimic.TLSMimic{
+			Token:          cfg.AuthToken,
+			Filter:         filter,
+			GetCertificate: certMgr.SelfSignedCertificate,
+			DecoyAddr:      ml.Decoy,
+			Decoy:          mimic.ServeDirectAdminPanel,
+		}, nil
 	case "smtp", "imap":
 		// STARTTLS: a plaintext mail-protocol prologue upgrades to the same TLS
 		// mimic, so the wire looks like a mail server negotiating STARTTLS.
-		tlsMimic, err := buildServerTLS(cfg, ml, filter)
-		if err != nil {
-			return nil, err
-		}
-		return &mimic.StartTLSMimic{Proto: ml.Type, TLS: tlsMimic}, nil
+		return &mimic.StartTLSMimic{Proto: ml.Type, TLS: &mimic.TLSMimic{
+			Token:          cfg.AuthToken,
+			Filter:         filter,
+			GetCertificate: certMgr.GetCertificate,
+			NextProtos:     certMgr.NextProtos(),
+			DecoyAddr:      ml.Decoy,
+			Decoy:          mimic.WebDecoyFor(cfg.DecoyStyle),
+		}}, nil
 	default: // "ssh"
 		decoy := ml.Decoy
 		if decoy == "" {
@@ -140,26 +172,6 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 		banner := newDecoyBannerMirror(decoy)
 		return &mimic.SSHMimic{Token: cfg.AuthToken, Filter: filter, DecoyAddr: decoy, Banner: banner.get}, nil
 	}
-}
-
-// buildServerTLS constructs a TLS mimic (self-signed cert + channel-bound auth),
-// reused directly for the "tls" listener and under the STARTTLS mail mimics.
-func buildServerTLS(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter) (*mimic.TLSMimic, error) {
-	cert, err := tlscert.LoadOrCreate(tlsCertDir, ml.ServerName)
-	if err != nil {
-		return nil, err
-	}
-	fp, err := tlscert.LeafFingerprint(&cert)
-	if err != nil {
-		return nil, err
-	}
-	return &mimic.TLSMimic{
-		Token:     cfg.AuthToken,
-		Filter:    filter,
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
-		CertFP:    fp,
-		DecoyAddr: ml.Decoy, // "" -> built-in web page
-	}, nil
 }
 
 // decoyBannerMirror holds the real sshd banner and keeps it up to date. SSH binds

@@ -18,16 +18,14 @@ func newTLSServer(t *testing.T, token string) (*TLSMimic, net.Listener) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fp, _ := tlscert.LeafFingerprint(&cert)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := &TLSMimic{
-		Token:     token,
-		Filter:    securestream.NewReplayFilter(0),
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
-		CertFP:    fp,
+		Token:          token,
+		Filter:         securestream.NewReplayFilter(0),
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil },
 	}
 	return m, ln
 }

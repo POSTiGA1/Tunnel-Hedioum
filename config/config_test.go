@@ -50,6 +50,23 @@ func TestForeignDefaults(t *testing.T) {
 	if cfg.EgressIPMode != "ipv4" || cfg.DecoyPort != 2022 {
 		t.Fatalf("defaults: mode=%q decoy=%d", cfg.EgressIPMode, cfg.DecoyPort)
 	}
+	if cfg.DecoyStyle != "apache" {
+		t.Fatalf("decoy_style default = %q, want apache", cfg.DecoyStyle)
+	}
+	if cfg.Domain != "" {
+		t.Fatalf("domain should default empty, got %q", cfg.Domain)
+	}
+}
+
+// TestForeignDomainConfig: an explicit domain/style/email round-trips through parse.
+func TestForeignDomainConfig(t *testing.T) {
+	cfg, err := parseConfig([]byte(`{"role":"foreign","auth_token":"x","domain":"vpn.example.com","acme_email":"a@b.c","decoy_style":"directadmin"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Domain != "vpn.example.com" || cfg.ACMEEmail != "a@b.c" || cfg.DecoyStyle != "directadmin" {
+		t.Fatalf("domain config not parsed: %+v", cfg)
+	}
 }
 
 func TestUpdateForeignNode(t *testing.T) {
