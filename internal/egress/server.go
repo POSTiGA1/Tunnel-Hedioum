@@ -84,7 +84,7 @@ func startHTTPServer(port int, certMgr *tlscert.CertManager, cfg *config.AppConf
 	if cfg.Domain != "" {
 		fallback = mimic.RedirectHTTPSHandler(cfg.Domain)
 	} else {
-		fallback = mimic.WebDefaultHTTPHandler(cfg.DecoyStyle)
+		fallback = mimic.NewDecoyProfile(cfg.AuthToken).WebDefaultHTTPHandler(cfg.DecoyStyle)
 	}
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
@@ -126,6 +126,9 @@ func startMimicListener(cfg *config.AppConfig, ml config.MimicListener, filter *
 
 // buildServerMimic constructs the server-side camouflage for a listener.
 func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *securestream.ReplayFilter, certMgr *tlscert.CertManager) (mimic.ServerMimic, error) {
+	// Per-install decoy identity (server version / date / ETag), seeded from the
+	// secret token so the web decoy is not byte-identical across the fleet.
+	decoy := mimic.NewDecoyProfile(cfg.AuthToken)
 	switch ml.Type {
 	case "tls", "smtps", "imaps":
 		// Implicit TLS: the wire is TLS from the first byte (like HTTPS/IMAPS/SMTPS).
@@ -137,7 +140,7 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 			GetCertificate: certMgr.GetCertificate,
 			NextProtos:     certMgr.NextProtos(),
 			DecoyAddr:      ml.Decoy, // "" -> built-in persona page
-			Decoy:          mimic.WebDecoyFor(cfg.DecoyStyle),
+			Decoy:          decoy.WebDecoyFor(cfg.DecoyStyle),
 		}, nil
 	case "directadmin":
 		// The DirectAdmin panel persona on :2222. It presents the real (ACME) cert
@@ -163,17 +166,17 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 			GetCertificate: certMgr.GetCertificate,
 			NextProtos:     certMgr.NextProtos(),
 			DecoyAddr:      ml.Decoy,
-			Decoy:          mimic.WebDecoyFor(cfg.DecoyStyle),
+			Decoy:          decoy.WebDecoyFor(cfg.DecoyStyle),
 		}}, nil
 	default: // "ssh"
-		decoy := ml.Decoy
-		if decoy == "" {
-			decoy = fmt.Sprintf("127.0.0.1:%d", cfg.DecoyPort)
+		sshDecoy := ml.Decoy
+		if sshDecoy == "" {
+			sshDecoy = fmt.Sprintf("127.0.0.1:%d", cfg.DecoyPort)
 		}
 		// Mirror the real sshd banner so a genuine SSH client routed to the decoy
 		// completes key exchange; kept fresh across boot races / sshd upgrades.
-		banner := newDecoyBannerMirror(decoy)
-		return &mimic.SSHMimic{Token: cfg.AuthToken, Filter: filter, DecoyAddr: decoy, Banner: banner.get}, nil
+		banner := newDecoyBannerMirror(sshDecoy)
+		return &mimic.SSHMimic{Token: cfg.AuthToken, Filter: filter, DecoyAddr: sshDecoy, Banner: banner.get}, nil
 	}
 }
 
