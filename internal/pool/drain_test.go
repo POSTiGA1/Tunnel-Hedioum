@@ -98,3 +98,48 @@ func TestReplenishNotBlockedByDrainers(t *testing.T) {
 		t.Fatalf("pool starved: only %d active pipes after replenish (want >= %d); draining pipes blocked scale-up", active, np.minConnections)
 	}
 }
+
+// TestReplenishEvictsDrainersAtCap: when every slot is a stuck draining pipe AT the
+// total cap, replenishment must evict the oldest drainer to admit fresh active pipes
+// — reaching the minimum without ever exceeding maxTotalFactor * maxConnections.
+func TestReplenishEvictsDrainersAtCap(t *testing.T) {
+	np := &NodePool{
+		Alias:          "n1",
+		label:          "tcp",
+		minConnections: 2,
+		maxConnections: 2, // total cap = maxTotalFactor(2) * 2 = 4
+		dialer:         fakeDialer,
+		lifecycle:      NewLifecyclePolicy("evict-test"),
+		shutdown:       make(chan struct{}),
+	}
+	cap := maxTotalFactor * np.maxConnections
+
+	// Fill to the total cap with stuck (still-streaming, recent, idle) drainers.
+	for i := 0; i < cap; i++ {
+		sess, _, err := fakeDialer()
+		if err != nil {
+			t.Fatalf("fakeDialer: %v", err)
+		}
+		ys := NewYamuxSession(sess, 10, 2, "tls", np.lifecycle)
+		if _, err := ys.OpenStream(); err != nil {
+			t.Fatalf("open stream: %v", err)
+		}
+		ys.SetDraining()
+		np.sessions = append(np.sessions, ys)
+	}
+
+	np.evaluateHealthAndScale()
+
+	active, total := 0, len(np.sessions)
+	for _, s := range np.sessions {
+		if s.IsActive() {
+			active++
+		}
+	}
+	if active < np.minConnections {
+		t.Fatalf("eviction failed: only %d active pipes (want >= %d)", active, np.minConnections)
+	}
+	if total > cap {
+		t.Fatalf("total sessions %d exceeded the cap %d", total, cap)
+	}
+}
