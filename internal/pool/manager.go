@@ -18,7 +18,33 @@ const (
 	defaultMinConns = 10
 	staggerDelay    = 500 * time.Millisecond
 	healthCheckFreq = 10 * time.Second
+
+	// Draining grace: an actively-transferring pipe (a live download/call) is never
+	// force-closed before the hard ceiling — new traffic already uses fresh pipes,
+	// so the retiring pipe just finishes its existing streams. Only an empty or idle
+	// pipe closes quickly; the hard ceiling is a final backstop against a stream that
+	// lingers forever (which would otherwise leak file descriptors).
+	drainSoftGrace   = 90 * time.Second
+	drainHardCeiling = 30 * time.Minute
+	// maxTotalFactor caps total sessions (active + draining) at this multiple of
+	// maxConnections, so draining pipes can never grow unbounded.
+	maxTotalFactor = 3
 )
+
+// shouldCloseDraining decides whether a draining pipe may be closed now. It never
+// cuts an actively-transferring stream before the hard ceiling: a clean pipe (no
+// streams) closes immediately, an idle one after a short grace, and any pipe at the
+// hard ceiling. This is what lets a user's in-flight download/call finish on its
+// (retiring) pipe while all new traffic seamlessly moves to fresh pipes.
+func shouldCloseDraining(streams int, drainedFor time.Duration, idle bool) bool {
+	if streams == 0 {
+		return true
+	}
+	if idle && drainedFor > drainSoftGrace {
+		return true
+	}
+	return drainedFor > drainHardCeiling
+}
 
 // DialFunc creates a new authenticated physical connection and reports which mimic
 // type it used, so the pool can apply the protocol-aware retirement policy.
@@ -251,10 +277,15 @@ func (np *NodePool) evaluateHealthAndScale() {
 				}
 			}
 		} else if s.IsDraining() {
-			// Deep cleanup: Only close a draining session when ALL its streams have naturally finished
-			if s.ActiveStreams() == 0 {
+			// Close a draining pipe only when it is safe: empty, idle-past-grace, or at
+			// the hard ceiling. An active transfer keeps flowing on its pipe until it
+			// finishes — we never cut a live download/call to satisfy retirement.
+			streams := s.ActiveStreams()
+			drainedFor := s.DrainingFor()
+			if shouldCloseDraining(streams, drainedFor, mbps < 1) {
 				s.Close()
-				slog.Info("draining complete: connection closed", "node", np.Alias, "pool", np.label)
+				slog.Info("draining complete: connection closed", "node", np.Alias, "pool", np.label,
+					"streams", streams, "drained_for", drainedFor.Round(time.Second))
 				continue // Remove from memory
 			}
 		}
@@ -271,43 +302,48 @@ func (np *NodePool) evaluateHealthAndScale() {
 		np.executeScaleUp()
 	}
 
-	// 3. Guarantee baseline availability safely based on MinConnections
+	// 3. Guarantee baseline availability based on ACTIVE connections only. Draining
+	// pipes are "on their way out" and never block replenishment — this is what keeps
+	// the pool from starving when retiring pipes are slow to drain (issue #23).
 	np.mu.RLock()
-	currentActive := 0
-	for _, s := range np.sessions {
-		if s.IsActive() {
-			currentActive++
-		}
-	}
+	currentActive := np.activeCountLocked()
 	np.mu.RUnlock()
 
+	// Watchdog: a node with zero active pipes is a starved pool — surface it and
+	// re-warm immediately (the replenish below does the actual healing).
+	if currentActive == 0 {
+		slog.Warn("watchdog: pool has no active connections — re-warming", "node", np.Alias, "pool", np.label)
+	}
 	if currentActive < np.minConnections {
 		np.replenishPool(np.minConnections - currentActive)
 	}
 }
 
-// executeScaleUp prioritizes reviving a draining connection; if none exist, dials a new one.
-func (np *NodePool) executeScaleUp() {
-	np.mu.Lock()
-
-	// Fast Path: Revive a draining connection (Zero Overhead)
+// activeCountLocked counts Active (non-draining, non-closed) sessions. Caller holds np.mu.
+func (np *NodePool) activeCountLocked() int {
+	n := 0
 	for _, s := range np.sessions {
-		if s.IsDraining() {
-			s.Revive()
-			slog.Info("scaled up: revived draining connection", "node", np.Alias, "pool", np.label)
-			np.mu.Unlock()
-			return
+		if s.IsActive() {
+			n++
 		}
 	}
+	return n
+}
 
-	totalConns := len(np.sessions)
-	np.mu.Unlock()
+// executeScaleUp dials a fresh physical connection under load. Draining is terminal:
+// a pipe that started draining is never brought back — reviving a lifecycle-retired
+// pipe would just re-retire it (churn for nothing), and always dialing fresh keeps
+// the mimic mix rotating, which is the point. Gated on the ACTIVE count so draining
+// pipes never block scale-up.
+func (np *NodePool) executeScaleUp() {
+	np.mu.RLock()
+	activeConns := np.activeCountLocked()
+	np.mu.RUnlock()
 
-	// Slow Path: Dial a new physical connection
-	if totalConns < np.maxConnections {
+	if activeConns < np.maxConnections {
 		np.replenishPool(1)
 	} else {
-		slog.Warn("max physical connections reached", "node", np.Alias, "pool", np.label, "max", np.maxConnections)
+		slog.Warn("max active connections reached", "node", np.Alias, "pool", np.label, "max", np.maxConnections)
 	}
 }
 
@@ -323,9 +359,13 @@ func (np *NodePool) replenishPool(needed int) {
 			wrappedSession := NewYamuxSession(rawYamuxSession, np.baseLimitMbps, np.jitterMbps, mimicType, np.lifecycle)
 
 			np.mu.Lock()
-			if len(np.sessions) < np.maxConnections {
+			// Admit if we still need active pipes AND the total (incl. draining) is
+			// under the safety cap. Gating on active count is the fix for issue #23:
+			// draining pipes no longer block a fresh active pipe from being dialed.
+			if np.activeCountLocked() < np.maxConnections && len(np.sessions) < maxTotalFactor*np.maxConnections {
 				np.sessions = append(np.sessions, wrappedSession)
-				slog.Info("scaled up: dialed new connection", "node", np.Alias, "pool", np.label, "total", len(np.sessions), "max", np.maxConnections)
+				slog.Info("scaled up: dialed new connection", "node", np.Alias, "pool", np.label,
+					"active", np.activeCountLocked(), "total", len(np.sessions), "max", np.maxConnections)
 			} else {
 				wrappedSession.Close()
 			}

@@ -31,10 +31,11 @@ type YamuxSession struct {
 	// Protocol-aware lifecycle (see lifecycle.go). A non-SSH pipe retires after
 	// retireAfter OR byteBudget, whichever comes first; SSH retires on the long
 	// retireAfter only (byteBudget == 0 means "no budget").
-	mimicType   string
-	bornAt      time.Time
-	retireAfter time.Duration
-	byteBudget  uint64
+	mimicType     string
+	bornAt        time.Time
+	retireAfter   time.Duration
+	byteBudget    uint64
+	drainingSince time.Time // when SetDraining was called (guarded by mu)
 
 	// Chaos Mesh / DPI Evasion Parameters
 	baseLimitMbps  int
@@ -195,11 +196,28 @@ func (ys *YamuxSession) CurrentCap() int {
 // --- State Management (Active / Draining) ---
 
 func (ys *YamuxSession) SetDraining() {
+	ys.mu.Lock()
+	ys.drainingSince = time.Now()
+	ys.mu.Unlock()
 	atomic.StoreInt32(&ys.state, StateDraining)
 }
 
 func (ys *YamuxSession) Revive() {
+	ys.mu.Lock()
+	ys.drainingSince = time.Time{}
+	ys.mu.Unlock()
 	atomic.StoreInt32(&ys.state, StateActive)
+}
+
+// DrainingFor reports how long this session has been in the Draining state (0 if it
+// is not draining), used to bound the drain grace period.
+func (ys *YamuxSession) DrainingFor() time.Duration {
+	ys.mu.RLock()
+	defer ys.mu.RUnlock()
+	if ys.drainingSince.IsZero() {
+		return 0
+	}
+	return time.Since(ys.drainingSince)
 }
 
 func (ys *YamuxSession) IsDraining() bool {
