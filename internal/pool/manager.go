@@ -27,8 +27,10 @@ const (
 	drainSoftGrace   = 90 * time.Second
 	drainHardCeiling = 30 * time.Minute
 	// maxTotalFactor caps total sessions (active + draining) at this multiple of
-	// maxConnections, so draining pipes can never grow unbounded.
-	maxTotalFactor = 3
+	// maxConnections, so draining pipes can never grow unbounded. Kept tight (2×) so
+	// the connection count to one egress IP stays modest (traffic-analysis stealth).
+	// At the cap, a fresh active pipe evicts the oldest drainer rather than starving.
+	maxTotalFactor = 2
 )
 
 // shouldCloseDraining decides whether a draining pipe may be closed now. It never
@@ -330,6 +332,29 @@ func (np *NodePool) activeCountLocked() int {
 	return n
 }
 
+// evictOldestDrainingLocked force-closes and removes the pipe that has been draining
+// the longest, to free a slot for a fresh active pipe at the total-session cap.
+// Returns false if there is no draining pipe to evict. Caller holds np.mu.
+func (np *NodePool) evictOldestDrainingLocked() bool {
+	idx := -1
+	var oldest time.Duration
+	for i, s := range np.sessions {
+		if s.IsDraining() {
+			if d := s.DrainingFor(); idx == -1 || d > oldest {
+				idx, oldest = i, d
+			}
+		}
+	}
+	if idx == -1 {
+		return false
+	}
+	np.sessions[idx].Close()
+	slog.Info("evicted oldest draining connection to free a slot", "node", np.Alias, "pool", np.label,
+		"drained_for", oldest.Round(time.Second))
+	np.sessions = append(np.sessions[:idx], np.sessions[idx+1:]...)
+	return true
+}
+
 // executeScaleUp dials a fresh physical connection under load. Draining is terminal:
 // a pipe that started draining is never brought back — reviving a lifecycle-retired
 // pipe would just re-retire it (churn for nothing), and always dialing fresh keeps
@@ -359,15 +384,20 @@ func (np *NodePool) replenishPool(needed int) {
 			wrappedSession := NewYamuxSession(rawYamuxSession, np.baseLimitMbps, np.jitterMbps, mimicType, np.lifecycle)
 
 			np.mu.Lock()
-			// Admit if we still need active pipes AND the total (incl. draining) is
-			// under the safety cap. Gating on active count is the fix for issue #23:
-			// draining pipes no longer block a fresh active pipe from being dialed.
-			if np.activeCountLocked() < np.maxConnections && len(np.sessions) < maxTotalFactor*np.maxConnections {
+			// Admit a fresh ACTIVE pipe when we still need one. Gating on active count
+			// is the fix for issue #23. At the total-session cap, evict the oldest
+			// draining pipe (they are on their way out) to make room, so the pool can
+			// always reach maxConnections active pipes without ever exceeding the cap
+			// or starving.
+			switch {
+			case np.activeCountLocked() >= np.maxConnections:
+				wrappedSession.Close() // enough active pipes already
+			case len(np.sessions) >= maxTotalFactor*np.maxConnections && !np.evictOldestDrainingLocked():
+				wrappedSession.Close() // at the cap with nothing to evict (fail-safe; can't happen while active < max)
+			default:
 				np.sessions = append(np.sessions, wrappedSession)
 				slog.Info("scaled up: dialed new connection", "node", np.Alias, "pool", np.label,
 					"active", np.activeCountLocked(), "total", len(np.sessions), "max", np.maxConnections)
-			} else {
-				wrappedSession.Close()
 			}
 			np.mu.Unlock()
 		} else {
