@@ -38,12 +38,14 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 				"6. Run Speedtest to a Node",
 				"7. Probe Endpoints (per-mimic reachability)",
 				"8. Check This Server's IP Reputation",
+				"9. Restart the Service (reset all pools)",
 			)
 		} else {
 			options = append(options,
 				"3. Edit Foreign Configuration",
 				"4. Rotate Authentication Token",
 				"5. Check Egress IP Reputation",
+				"6. Restart the Service",
 			)
 		}
 
@@ -142,6 +144,14 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 
 		case strings.Contains(action, "IP Reputation"):
 			cmdCheckIP(nil)
+
+		case strings.Contains(action, "Restart the Service"):
+			color.HiBlue("\n[*] Restarting hedioum.service (re-warms every pool)...")
+			if err := exec.Command("systemctl", "restart", "hedioum.service").Run(); err != nil {
+				color.Yellow("[-] Restart failed (are you root?): %v", err)
+			} else {
+				color.Green("[✓] Service restarted; pools re-warming.")
+			}
 
 		case strings.Contains(action, "Rotate Authentication Token"):
 			cfg.AuthToken = sysutil.GenerateSecureToken()
