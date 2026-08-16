@@ -4,7 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/hedioum/Hedioum-Pool-Tunnel?color=blue&label=release)](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest)
 [![Stars](https://img.shields.io/github/stars/hedioum/Hedioum-Pool-Tunnel?style=flat)](https://github.com/hedioum/Hedioum-Pool-Tunnel/stargazers)
 
-🌐 **[🇮🇷 راهنمای فارسی — Persian README](README.fa.md)** · **[Latest release](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest)**
+🌐 **🇬🇧 English** · **[🇮🇷 فارسی](README.fa.md)** · **[🇷🇺 Русский](README.ru.md)** · **[🇨🇳 中文](README.zh.md)** · **[Latest release](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest)**
 
 Hedioum Pool Tunnel is a high-performance, enterprise-grade connection multiplexer designed to bypass strict Deep Packet Inspection (DPI) and thwart TCP Meltdown under heavy load. It operates as a Custom SDN Overlay, wrapping encrypted VLESS/Trojan traffic into highly obfuscated, dynamically scaling connection pools that wear interchangeable disguises — **SSH, TLS/HTTPS, SMTP/IMAP, and a DirectAdmin control panel** — over a modern authenticated-encryption transport.
 
