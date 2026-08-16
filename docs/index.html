@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hedioum Pool Tunnel — anti-DPI / anti-censorship tunnel</title>
+<meta name="description" content="High-performance open-source anti-DPI, anti-censorship tunnel in Go. Disguises VLESS/Trojan traffic as SSH, TLS/HTTPS, SMTP/IMAP and a DirectAdmin panel. Real Let's Encrypt certificates, full UDP/QUIC, dynamic connection pools." />
+<meta name="keywords" content="censorship circumvention, anti-censorship, DPI bypass, GFW, VPN, proxy, tunnel, obfuscation, Golang, VLESS, Trojan, Xray, SOCKS5, QUIC, обход блокировок, 翻墙, 科学上网" />
+<meta property="og:title" content="Hedioum Pool Tunnel" />
+<meta property="og:description" content="Open-source anti-DPI / anti-censorship tunnel in Go — protocol mimicry (SSH/TLS/SMTP/IMAP/DirectAdmin), real Let's Encrypt certs, full UDP/QUIC, dynamic connection pools." />
+<meta property="og:type" content="website" />
+<meta property="og:image" content="https://hedioum.github.io/Hedioum-Pool-Tunnel/social-preview.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content="https://hedioum.github.io/Hedioum-Pool-Tunnel/social-preview.png" />
+<style>
+  :root{
+    --bg:#0b0f17; --bg2:#111725; --card:#141c2b; --line:#24304a;
+    --text:#e6ebf4; --muted:#93a1b8; --accent:#3aa0e0; --accent2:#54d18c;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 20px}
+  header{background:radial-gradient(1200px 400px at 50% -120px,rgba(58,160,224,.18),transparent),var(--bg);border-bottom:1px solid var(--line)}
+  .hero{padding:70px 20px 54px;text-align:center}
+  .hero h1{font-size:clamp(30px,6vw,52px);margin:0 0 10px;letter-spacing:-.5px}
+  .hero .tag{color:var(--muted);font-size:clamp(15px,2.5vw,20px);max-width:760px;margin:0 auto 22px}
+  .badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:26px}
+  .langs{color:var(--muted);font-size:14px;margin-bottom:26px}
+  .langs a{margin:0 6px}
+  .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{display:inline-block;padding:12px 20px;border-radius:10px;font-weight:600;border:1px solid var(--line)}
+  .btn.primary{background:var(--accent);color:#05121d;border-color:var(--accent)}
+  .btn.ghost{background:transparent;color:var(--text)}
+  .install{max-width:760px;margin:26px auto 0;text-align:left}
+  .install .label{color:var(--muted);font-size:13px;margin-bottom:6px}
+  .code{display:flex;align-items:center;gap:10px;background:#0a0e16;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;overflow-x:auto}
+  .code code{color:#cfe6ff;white-space:nowrap}
+  .copy{margin-left:auto;background:var(--card);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:6px 10px;cursor:pointer;font-size:12px;white-space:nowrap}
+  .copy:hover{color:var(--text)}
+  section{padding:52px 0}
+  h2{font-size:26px;margin:0 0 26px;text-align:center}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+  .feat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}
+  .feat h3{margin:0 0 8px;font-size:17px}
+  .feat p{margin:0;color:var(--muted);font-size:14.5px}
+  .feat .ic{font-size:22px;margin-bottom:8px}
+  footer{border-top:1px solid var(--line);color:var(--muted);font-size:14px;padding:30px 0 50px;text-align:center}
+  footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <div class="hero">
+    <div class="wrap">
+      <h1>Hedioum Pool Tunnel</h1>
+      <p class="tag">A high-performance, open-source <strong>anti-DPI / anti-censorship</strong> tunnel in Go. It disguises encrypted VLESS/Trojan traffic as <strong>SSH, TLS/HTTPS, SMTP/IMAP</strong> and a <strong>DirectAdmin panel</strong> over dynamic, self-scaling connection pools — very hard to fingerprint or block.</p>
+      <div class="badges">
+        <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/hedioum/Hedioum-Pool-Tunnel/total?color=brightgreen&label=downloads"></a>
+        <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/hedioum/Hedioum-Pool-Tunnel?color=blue&label=release"></a>
+        <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/hedioum/Hedioum-Pool-Tunnel?style=flat"></a>
+        <img alt="License GPLv3" src="https://img.shields.io/badge/license-GPLv3-blue">
+      </div>
+      <div class="langs">
+        📖 <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/blob/main/README.md">English</a> ·
+        <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/blob/main/README.fa.md">فارسی</a> ·
+        <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/blob/main/README.ru.md">Русский</a> ·
+        <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/blob/main/README.zh.md">中文</a>
+      </div>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/hedioum/Hedioum-Pool-Tunnel">⭐ GitHub</a>
+        <a class="btn ghost" href="https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest">Download</a>
+        <a class="btn ghost" href="https://github.com/hedioum/Hedioum-Pool-Tunnel/blob/main/docs/DEPLOY.md">Docs</a>
+      </div>
+      <div class="install">
+        <div class="label">Install / update (run as root on each VPS — foreign node first):</div>
+        <div class="code">
+          <code id="cmd">bash &lt;(curl -fsSL https://raw.githubusercontent.com/hedioum/Hedioum-Pool-Tunnel/main/install.sh)</code>
+          <button class="copy" onclick="navigator.clipboard&amp;&amp;navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(()=>{this.textContent='Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>Why Hedioum</h2>
+    <div class="grid">
+      <div class="feat"><div class="ic">🎭</div><h3>Protocol mimicry arsenal</h3><p>One node listens behind SSH, TLS/HTTPS, STARTTLS SMTP/IMAP, implicit-TLS SMTPS/IMAPS and a DirectAdmin panel — each install presents a different, shifting on-wire signature.</p></div>
+      <div class="feat"><div class="ic">📜</div><h3>Real Let's Encrypt certs</h3><p>With a domain, the TLS mimic serves a genuine, auto-renewing ACME certificate — CT-logged like any real HTTPS host — with a safe self-signed fallback.</p></div>
+      <div class="feat"><div class="ic">🔐</div><h3>Authenticated encryption</h3><p>ChaCha20-Poly1305 + HKDF. The token is never sent on the wire and channel-bound auth defeats MITM — with a single crypto layer for high throughput.</p></div>
+      <div class="feat"><div class="ic">⏳</div><h3>Protocol-aware lifecycle</h3><p>SSH is the long-lived backbone; non-SSH pipes retire on a randomized time/byte budget and churn to fresh connections — no fixed long-lived signature.</p></div>
+      <div class="feat"><div class="ic">⚡</div><h3>Chaos-Mesh dynamic pools</h3><p>Least-loaded balancing that scales on real bandwidth, fluctuating rate caps, and zero-downtime draining — no lag when connections cycle.</p></div>
+      <div class="feat"><div class="ic">📱</div><h3>Full TCP + UDP</h3><p>One SOCKS5 port serves TCP and UDP-over-TCP, so QUIC/HTTP3, DNS and voice/video work — on an isolated sub-pool, with no DNS leak by design.</p></div>
+      <div class="feat"><div class="ic">🕵️</div><h3>Decoys &amp; active-probe resistance</h3><p>Unauthorized probes get a real sshd, a DirectAdmin login, or a per-install-unique web page — even the bare IP looks like an ordinary host.</p></div>
+      <div class="feat"><div class="ic">🧰</div><h3>Batteries included</h3><p>Non-interactive setup, in-place node editing, an interactive dashboard, safe self-update, a built-in speedtest, probe, and an egress IP-reputation check.</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Open source under <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/blob/main/LICENSE">GPL-3.0</a> ·
+    <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel">github.com/hedioum/Hedioum-Pool-Tunnel</a><br>
+    Built for a free and open internet.
+  </div>
+</footer>
+</body>
+</html>
