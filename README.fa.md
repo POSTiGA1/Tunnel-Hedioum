@@ -4,7 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/hedioum/Hedioum-Pool-Tunnel?color=blue&label=release)](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest)
 [![Stars](https://img.shields.io/github/stars/hedioum/Hedioum-Pool-Tunnel?style=flat)](https://github.com/hedioum/Hedioum-Pool-Tunnel/stargazers)
 
-🌐 **[🇬🇧 English README](README.md)** · **[آخرین نسخه (Releases)](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest)**
+🌐 **[🇬🇧 English](README.md)** · **🇮🇷 فارسی** · **[🇷🇺 Русский](README.ru.md)** · **[🇨🇳 中文](README.zh.md)** · **[آخرین نسخه (Releases)](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest)**
 
 هدیوم یک مالتی‌پلکسر اتصال پرسرعت و حرفه‌ای است که برای عبور از فیلترینگ سخت‌گیرانه‌ی DPI و جلوگیری از افت شدید TCP زیر بار سنگین طراحی شده. این ابزار مثل یک لایه‌ی شبکه‌ی سفارشی (SDN) عمل می‌کند و ترافیک رمزنگاری‌شده‌ی VLESS/Trojan را داخل استخری از اتصالات که هر کدام یک **استتار متفاوت** به تن دارند (SSH، TLS/HTTPS، SMTP/IMAP، و **پنل کنترل DirectAdmin**) پنهان می‌کند و روی یک لایه‌ی رمزنگاریِ احرازشده‌ی مدرن جابه‌جا می‌کند.
 
