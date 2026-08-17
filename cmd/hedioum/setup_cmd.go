@@ -21,7 +21,8 @@ import (
 // to this; the wizard and validators share it so CLI and wizard never disagree.
 var mimicTypesAll = []string{
 	"ssh", "tls", "https-alt", "smtp", "imap", "smtps", "imaps",
-	"directadmin", "docker", "grafana", "prometheus", "postgres", "mysql",
+	"directadmin", "docker", "grafana", "prometheus",
+	"cpanel", "whm", "webmail", "postgres", "mysql",
 }
 
 func validMimicType(t string) bool {
@@ -81,6 +82,9 @@ func cmdSetupForeign(args []string) {
 	dockerPort := fs.Int("docker-port", 5000, "Docker Registry (implicit TLS) mimic port")
 	grafanaPort := fs.Int("grafana-port", 3000, "Grafana (implicit TLS) mimic port")
 	promPort := fs.Int("prometheus-port", 9090, "Prometheus (implicit TLS) mimic port")
+	cpanelPort := fs.Int("cpanel-port", 2083, "cPanel (implicit TLS) mimic port")
+	whmPort := fs.Int("whm-port", 2087, "WHM (implicit TLS) mimic port")
+	webmailPort := fs.Int("webmail-port", 2096, "Webmail (implicit TLS) mimic port")
 	pgPort := fs.Int("postgres-port", 5432, "PostgreSQL (STARTTLS) mimic port")
 	mysqlPort := fs.Int("mysql-port", 3306, "MySQL/MariaDB (STARTTLS) mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI/CN (optional)")
@@ -170,6 +174,21 @@ func cmdSetupForeign(args []string) {
 				fail("--prometheus-port: %v", err)
 			}
 			mimicList = append(mimicList, config.MimicListener{Type: "prometheus", Port: *promPort, ServerName: *tlsServerName})
+		case "cpanel":
+			if err := validPort(*cpanelPort); err != nil {
+				fail("--cpanel-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "cpanel", Port: *cpanelPort, ServerName: *tlsServerName})
+		case "whm":
+			if err := validPort(*whmPort); err != nil {
+				fail("--whm-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "whm", Port: *whmPort, ServerName: *tlsServerName})
+		case "webmail":
+			if err := validPort(*webmailPort); err != nil {
+				fail("--webmail-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "webmail", Port: *webmailPort, ServerName: *tlsServerName})
 		case "postgres":
 			if err := validPort(*pgPort); err != nil {
 				fail("--postgres-port: %v", err)
@@ -249,6 +268,9 @@ func cmdAddNode(args []string) {
 	dockerPort := fs.Int("docker-port", 5000, "foreign Docker Registry mimic port")
 	grafanaPort := fs.Int("grafana-port", 3000, "foreign Grafana mimic port")
 	promPort := fs.Int("prometheus-port", 9090, "foreign Prometheus mimic port")
+	cpanelPort := fs.Int("cpanel-port", 2083, "foreign cPanel mimic port")
+	whmPort := fs.Int("whm-port", 2087, "foreign WHM mimic port")
+	webmailPort := fs.Int("webmail-port", 2096, "foreign Webmail mimic port")
 	pgPort := fs.Int("postgres-port", 5432, "foreign PostgreSQL (STARTTLS) mimic port")
 	mysqlPort := fs.Int("mysql-port", 3306, "foreign MySQL (STARTTLS) mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI (set to the foreign's domain for a real cert)")
@@ -285,7 +307,8 @@ func cmdAddNode(args []string) {
 			"ssh-port": *sshPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort,
 			"smtps-port": *smtpsPort, "imaps-port": *imapsPort, "directadmin-port": *daPort,
 			"https-alt-port": *httpsAltPort, "docker-port": *dockerPort, "grafana-port": *grafanaPort,
-			"prometheus-port": *promPort, "postgres-port": *pgPort, "mysql-port": *mysqlPort,
+			"prometheus-port": *promPort, "cpanel-port": *cpanelPort, "whm-port": *whmPort,
+			"webmail-port": *webmailPort, "postgres-port": *pgPort, "mysql-port": *mysqlPort,
 		} {
 			if err := validPort(p); err != nil {
 				fail("--%s: %v", label, err)
@@ -295,7 +318,8 @@ func cmdAddNode(args []string) {
 			"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort,
 			"smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort,
 			"https-alt": *httpsAltPort, "docker": *dockerPort, "grafana": *grafanaPort,
-			"prometheus": *promPort, "postgres": *pgPort, "mysql": *mysqlPort,
+			"prometheus": *promPort, "cpanel": *cpanelPort, "whm": *whmPort, "webmail": *webmailPort,
+			"postgres": *pgPort, "mysql": *mysqlPort,
 		}
 		for _, ty := range types {
 			sni := ""

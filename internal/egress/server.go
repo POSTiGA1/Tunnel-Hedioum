@@ -175,6 +175,20 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 			DecoyAddr:      ml.Decoy,
 			Decoy:          mimic.ServePrometheus,
 		}, nil
+	case "cpanel", "whm", "webmail":
+		// cpsrvd panel personas on :2083 / :2087 / :2096 — implicit TLS; an unauthorized
+		// probe gets the matching cPanel/WHM/Webmail login (same cpsrvd template).
+		cpsrvdDecoy := map[string]func(net.Conn){
+			"cpanel": mimic.ServeCPanel, "whm": mimic.ServeWHM, "webmail": mimic.ServeWebmail,
+		}[ml.Type]
+		return &mimic.TLSMimic{
+			Token:          cfg.AuthToken,
+			Filter:         filter,
+			GetCertificate: certMgr.GetCertificate,
+			NextProtos:     certMgr.NextProtos(),
+			DecoyAddr:      ml.Decoy,
+			Decoy:          cpsrvdDecoy,
+		}, nil
 	case "directadmin":
 		// The DirectAdmin panel persona on :2222. It presents the real (ACME) cert
 		// when a domain is configured — exactly like a well-run panel with a hostname
