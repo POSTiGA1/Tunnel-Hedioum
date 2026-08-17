@@ -15,7 +15,10 @@ import (
 // conventionalPorts is the default port per mimic type when a config does not
 // already pin one.
 func conventionalPorts() map[string]int {
-	return map[string]int{"ssh": 22, "tls": 443, "smtp": 587, "imap": 143, "smtps": 465, "imaps": 993, "directadmin": 2222}
+	return map[string]int{
+		"ssh": 22, "tls": 443, "smtp": 587, "imap": 143, "smtps": 465, "imaps": 993,
+		"directadmin": 2222, "https-alt": 8443, "docker": 5000, "postgres": 5432, "mysql": 3306,
+	}
 }
 
 // currentForeignPorts returns the port per mimic type, using the foreign config's
@@ -205,6 +208,11 @@ func cmdEditForeign(args []string) {
 		fail("--mimics: %v", err)
 	}
 	portMap := map[string]int{"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort, "smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort}
+	// New-arsenal mimics (https-alt/docker/postgres/mysql) keep their resolved port
+	// (conventional default or the value already pinned in config); no extra flags.
+	for _, ty := range []string{"https-alt", "docker", "postgres", "mysql"} {
+		portMap[ty] = ports[ty]
+	}
 	for label, p := range portMap {
 		if err := validPort(p); err != nil {
 			fail("--%s-port: %v", label, err)
@@ -297,6 +305,11 @@ func cmdEditNode(args []string) {
 		fail("--mimics: %v", err)
 	}
 	portMap := map[string]int{"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort, "smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort}
+	// New-arsenal mimics (https-alt/docker/postgres/mysql) keep their resolved port
+	// (conventional default or the value already pinned in config); no extra flags.
+	for _, ty := range []string{"https-alt", "docker", "postgres", "mysql"} {
+		portMap[ty] = ports[ty]
+	}
 	for label, p := range portMap {
 		if err := validPort(p); err != nil {
 			fail("--%s-port: %v", label, err)

@@ -130,10 +130,10 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 	// secret token so the web decoy is not byte-identical across the fleet.
 	decoy := mimic.NewDecoyProfile(cfg.AuthToken)
 	switch ml.Type {
-	case "tls", "smtps", "imaps":
+	case "tls", "smtps", "imaps", "https-alt":
 		// Implicit TLS: the wire is TLS from the first byte (like HTTPS/IMAPS/SMTPS).
-		// smtps/imaps are the same mimic as tls, just on their conventional ports.
-		// These present the real (ACME) cert when a domain is configured.
+		// smtps/imaps/https-alt are the same mimic as tls, just on their conventional
+		// ports. These present the real (ACME) cert when a domain is configured.
 		return &mimic.TLSMimic{
 			Token:          cfg.AuthToken,
 			Filter:         filter,
@@ -141,6 +141,17 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 			NextProtos:     certMgr.NextProtos(),
 			DecoyAddr:      ml.Decoy, // "" -> built-in persona page
 			Decoy:          decoy.WebDecoyFor(cfg.DecoyStyle),
+		}, nil
+	case "docker":
+		// Container-registry persona on :5000 — implicit TLS; an unauthorized probe
+		// gets a docker/distribution Registry v2 API challenge (401 + registry marker).
+		return &mimic.TLSMimic{
+			Token:          cfg.AuthToken,
+			Filter:         filter,
+			GetCertificate: certMgr.GetCertificate,
+			NextProtos:     certMgr.NextProtos(),
+			DecoyAddr:      ml.Decoy,
+			Decoy:          mimic.ServeDockerRegistry,
 		}, nil
 	case "directadmin":
 		// The DirectAdmin panel persona on :2222. It presents the real (ACME) cert
@@ -157,9 +168,10 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 			DecoyAddr:      ml.Decoy,
 			Decoy:          mimic.ServeDirectAdminPanel,
 		}, nil
-	case "smtp", "imap":
-		// STARTTLS: a plaintext mail-protocol prologue upgrades to the same TLS
-		// mimic, so the wire looks like a mail server negotiating STARTTLS.
+	case "smtp", "imap", "postgres", "mysql":
+		// STARTTLS family: a plaintext protocol prologue upgrades to the same TLS
+		// mimic. smtp/imap look like a mail server negotiating STARTTLS; postgres/
+		// mysql look like a database negotiating SSL, then TLS.
 		return &mimic.StartTLSMimic{Proto: ml.Type, TLS: &mimic.TLSMimic{
 			Token:          cfg.AuthToken,
 			Filter:         filter,
