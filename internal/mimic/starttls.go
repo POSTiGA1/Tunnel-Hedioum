@@ -20,7 +20,7 @@ const starttlsTimeout = 8 * time.Second
 
 // StartTLSMimic is the server side; it wraps a TLSMimic for the post-STARTTLS half.
 type StartTLSMimic struct {
-	Proto string // "smtp" | "imap"
+	Proto string // "smtp" | "imap" | "postgres" | "mysql"
 	TLS   *TLSMimic
 }
 
@@ -77,6 +77,10 @@ func serverStartTLSPrologue(conn net.Conn, proto string) error {
 	defer conn.SetDeadline(time.Time{})
 
 	switch proto {
+	case "postgres":
+		return serverPostgresPrologue(conn)
+	case "mysql":
+		return serverMySQLPrologue(conn)
 	case "smtp":
 		if err := stWrite(conn, "220 mail ESMTP"); err != nil {
 			return err
@@ -145,6 +149,10 @@ func clientStartTLSPrologue(conn net.Conn, proto string) error {
 	defer conn.SetDeadline(time.Time{})
 
 	switch proto {
+	case "postgres":
+		return clientPostgresPrologue(conn)
+	case "mysql":
+		return clientMySQLPrologue(conn)
 	case "smtp":
 		if _, err := stReadLine(conn); err != nil { // 220 greeting
 			return err
