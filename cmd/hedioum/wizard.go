@@ -340,7 +340,7 @@ func promptMimicsWithDefault(def []string) []string {
 		Message: "Select camouflage protocols (Space toggles, Enter confirms):",
 		Options: append([]string{allOpt}, allMimics...),
 		Default: def,
-		Help:    "ssh=22, tls=HTTPS:443, https-alt=8443, smtp=587, imap=143, smtps=465, imaps=993, directadmin=2222, docker=5000, grafana=3000, postgres=5432, mysql=3306. Run several for a stronger, shifting signature.",
+		Help:    "ssh=22, tls=HTTPS:443, https-alt=8443, smtp=587, imap=143, smtps=465, imaps=993, directadmin=2222, docker=5000, grafana=3000, prometheus=9090, postgres=5432, mysql=3306. Run several for a stronger, shifting signature.",
 	}, &sel)
 
 	chosen := map[string]bool{}

@@ -33,7 +33,8 @@ func TestContainsStr(t *testing.T) {
 func TestAllMimicsComplete(t *testing.T) {
 	want := map[string]bool{
 		"ssh": true, "tls": true, "https-alt": true, "smtp": true, "imap": true,
-		"smtps": true, "imaps": true, "directadmin": true, "docker": true, "grafana": true, "postgres": true, "mysql": true,
+		"smtps": true, "imaps": true, "directadmin": true, "docker": true, "grafana": true,
+		"prometheus": true, "postgres": true, "mysql": true,
 	}
 	if len(allMimics) != len(want) {
 		t.Fatalf("allMimics = %v, want %d types", allMimics, len(want))

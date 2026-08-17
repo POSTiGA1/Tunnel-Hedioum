@@ -164,6 +164,17 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 			DecoyAddr:      ml.Decoy,
 			Decoy:          mimic.ServeGrafana,
 		}, nil
+	case "prometheus":
+		// Prometheus persona on :9090 — implicit TLS; an unauthorized probe gets the
+		// real /-/healthy, /metrics and /api/v1 fingerprints.
+		return &mimic.TLSMimic{
+			Token:          cfg.AuthToken,
+			Filter:         filter,
+			GetCertificate: certMgr.GetCertificate,
+			NextProtos:     certMgr.NextProtos(),
+			DecoyAddr:      ml.Decoy,
+			Decoy:          mimic.ServePrometheus,
+		}, nil
 	case "directadmin":
 		// The DirectAdmin panel persona on :2222. It presents the real (ACME) cert
 		// when a domain is configured — exactly like a well-run panel with a hostname

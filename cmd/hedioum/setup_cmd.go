@@ -21,7 +21,7 @@ import (
 // to this; the wizard and validators share it so CLI and wizard never disagree.
 var mimicTypesAll = []string{
 	"ssh", "tls", "https-alt", "smtp", "imap", "smtps", "imaps",
-	"directadmin", "docker", "grafana", "postgres", "mysql",
+	"directadmin", "docker", "grafana", "prometheus", "postgres", "mysql",
 }
 
 func validMimicType(t string) bool {
@@ -80,6 +80,7 @@ func cmdSetupForeign(args []string) {
 	httpsAltPort := fs.Int("https-alt-port", 8443, "alt-HTTPS (implicit TLS) mimic port")
 	dockerPort := fs.Int("docker-port", 5000, "Docker Registry (implicit TLS) mimic port")
 	grafanaPort := fs.Int("grafana-port", 3000, "Grafana (implicit TLS) mimic port")
+	promPort := fs.Int("prometheus-port", 9090, "Prometheus (implicit TLS) mimic port")
 	pgPort := fs.Int("postgres-port", 5432, "PostgreSQL (STARTTLS) mimic port")
 	mysqlPort := fs.Int("mysql-port", 3306, "MySQL/MariaDB (STARTTLS) mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI/CN (optional)")
@@ -164,6 +165,11 @@ func cmdSetupForeign(args []string) {
 				fail("--grafana-port: %v", err)
 			}
 			mimicList = append(mimicList, config.MimicListener{Type: "grafana", Port: *grafanaPort, ServerName: *tlsServerName})
+		case "prometheus":
+			if err := validPort(*promPort); err != nil {
+				fail("--prometheus-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "prometheus", Port: *promPort, ServerName: *tlsServerName})
 		case "postgres":
 			if err := validPort(*pgPort); err != nil {
 				fail("--postgres-port: %v", err)
@@ -242,6 +248,7 @@ func cmdAddNode(args []string) {
 	httpsAltPort := fs.Int("https-alt-port", 8443, "foreign alt-HTTPS mimic port")
 	dockerPort := fs.Int("docker-port", 5000, "foreign Docker Registry mimic port")
 	grafanaPort := fs.Int("grafana-port", 3000, "foreign Grafana mimic port")
+	promPort := fs.Int("prometheus-port", 9090, "foreign Prometheus mimic port")
 	pgPort := fs.Int("postgres-port", 5432, "foreign PostgreSQL (STARTTLS) mimic port")
 	mysqlPort := fs.Int("mysql-port", 3306, "foreign MySQL (STARTTLS) mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI (set to the foreign's domain for a real cert)")
@@ -278,7 +285,7 @@ func cmdAddNode(args []string) {
 			"ssh-port": *sshPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort,
 			"smtps-port": *smtpsPort, "imaps-port": *imapsPort, "directadmin-port": *daPort,
 			"https-alt-port": *httpsAltPort, "docker-port": *dockerPort, "grafana-port": *grafanaPort,
-			"postgres-port": *pgPort, "mysql-port": *mysqlPort,
+			"prometheus-port": *promPort, "postgres-port": *pgPort, "mysql-port": *mysqlPort,
 		} {
 			if err := validPort(p); err != nil {
 				fail("--%s: %v", label, err)
@@ -288,7 +295,7 @@ func cmdAddNode(args []string) {
 			"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort,
 			"smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort,
 			"https-alt": *httpsAltPort, "docker": *dockerPort, "grafana": *grafanaPort,
-			"postgres": *pgPort, "mysql": *mysqlPort,
+			"prometheus": *promPort, "postgres": *pgPort, "mysql": *mysqlPort,
 		}
 		for _, ty := range types {
 			sni := ""
