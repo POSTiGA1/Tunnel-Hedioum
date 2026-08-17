@@ -1,9 +1,7 @@
 package mimic
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -199,29 +197,8 @@ const daLoginPage = `<!DOCTYPE html>
 `
 
 // ServeDirectAdminPanel handles one (keep-alive) HTTP/1.1 connection as a
-// DirectAdmin Evolution panel would.
-func ServeDirectAdminPanel(conn net.Conn) {
-	br := bufio.NewReader(conn)
-	for i := 0; i < 64; i++ { // bound the keep-alive loop (a browser fetches several assets)
-		_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-		req, err := http.ReadRequest(br)
-		if err != nil {
-			return
-		}
-		if req.Body != nil {
-			_, _ = io.Copy(io.Discard, req.Body)
-			_ = req.Body.Close()
-		}
-		keepAlive := req.ProtoAtLeast(1, 1) && !req.Close
-		_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
-		if err := routeDA(conn, req, keepAlive); err != nil {
-			return
-		}
-		if !keepAlive {
-			return
-		}
-	}
-}
+// DirectAdmin Evolution panel would, via the shared panel harness (panel.go).
+func ServeDirectAdminPanel(conn net.Conn) { servePanel(conn, routeDA) }
 
 // daAssetRoutes maps the panel's asset paths to embedded files + content types.
 var daAssetRoutes = map[string]struct{ file, ct string }{
@@ -233,29 +210,29 @@ var daAssetRoutes = map[string]struct{ file, ct string }{
 	"/favicon.ico":                             {"favicon.CDLA4ANV.png", "image/png"},
 }
 
-func routeDA(w net.Conn, req *http.Request, keepAlive bool) error {
+func routeDA(req *http.Request) panelResp {
 	path := req.URL.Path
 	if a, ok := daAssetRoutes[path]; ok {
-		return writeDAAsset(w, a.file, a.ct, keepAlive)
+		return panelAssetResp(daAssets, "daassets", a.file, a.ct)
 	}
 	switch {
 	case path == "/":
-		return writeDARedirect(w, "/evo/", keepAlive)
+		return daRedirect("/evo/")
 	case path == "/api/info":
 		host, _ := os.Hostname()
 		body := fmt.Sprintf(`{"hostname":%q,"allowPasswordReset":false,"OTPTrustDays":30,"languages":[],"license":{"active":true}}`, host)
-		return writeDA(w, 200, "application/json", body, keepAlive)
+		return daJSON(200, "OK", body)
 	case path == "/api/session/state":
-		return writeDA(w, 401, "application/json", `{"error":"Unauthenticated"}`, keepAlive)
+		return daJSON(401, "Unauthorized", `{"error":"Unauthenticated"}`)
 	case strings.HasPrefix(path, "/api/login"):
 		// A login attempt with unknown credentials — answered exactly as the real
 		// panel answers a bad login. No credential is inspected or stored.
-		return writeDA(w, 401, "application/json", `{"error":"Cannot Log In","result":"Invalid credentials"}`, keepAlive)
+		return daJSON(401, "Unauthorized", `{"error":"Cannot Log In","result":"Invalid credentials"}`)
 	case strings.HasPrefix(path, "/api/"):
-		return writeDA(w, 401, "application/json", `{"error":"Unauthenticated"}`, keepAlive)
+		return daJSON(401, "Unauthorized", `{"error":"Unauthenticated"}`)
 	default:
 		// The login page for /evo/, /evo/login and every SPA route.
-		return writeDA(w, 200, "text/html; charset=utf-8", daLoginHTML(), keepAlive)
+		return daHTML(200, "OK", daLoginHTML())
 	}
 }
 
@@ -270,52 +247,45 @@ func daLoginHTML() string {
 	return page
 }
 
-// writeDA writes an HTTP/1.1 response carrying DirectAdmin's characteristic headers:
-// no Server header, plus X-Frame-Options / X-Content-Type-Options / Cache-Control.
-func writeDA(w io.Writer, status int, contentType, body string, keepAlive bool) error {
-	conn := "close"
-	if keepAlive {
-		conn = "keep-alive"
+// daBody builds DirectAdmin's characteristic response: no Server header, plus
+// Cache-Control: no-cache / X-Frame-Options / X-Content-Type-Options / Vary, in the
+// exact order a live panel emits them (the shared writer adds Date first, Connection
+// last). daJSON/daHTML are the JSON and HTML variants.
+func daBody(status int, reason, contentType, body string) panelResp {
+	return panelResp{
+		status: status, reason: reason,
+		middle: [][2]string{
+			{"Content-Type", contentType},
+			{"Content-Length", fmt.Sprintf("%d", len(body))},
+			{"Cache-Control", "no-cache"},
+			{"X-Frame-Options", "sameorigin"},
+			{"X-Content-Type-Options", "nosniff"},
+			{"Vary", "Origin"},
+		},
+		body: []byte(body),
 	}
-	statusText := map[int]string{200: "OK", 401: "Unauthorized", 404: "Not Found"}[status]
-	resp := fmt.Sprintf("HTTP/1.1 %d %s\r\nDate: %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n"+
-		"Cache-Control: no-cache\r\nX-Frame-Options: sameorigin\r\nX-Content-Type-Options: nosniff\r\n"+
-		"Vary: Origin\r\nConnection: %s\r\n\r\n%s",
-		status, statusText, time.Now().UTC().Format(time.RFC1123), contentType, len(body), conn, body)
-	_, err := w.Write([]byte(resp))
-	return err
 }
 
-// writeDARedirect emits the 302 a real panel returns for "/".
-func writeDARedirect(w io.Writer, location string, keepAlive bool) error {
+func daJSON(status int, reason, body string) panelResp {
+	return daBody(status, reason, "application/json", body)
+}
+
+func daHTML(status int, reason, body string) panelResp {
+	return daBody(status, reason, "text/html; charset=utf-8", body)
+}
+
+// daRedirect emits the 302 a real panel returns for "/".
+func daRedirect(location string) panelResp {
 	body := fmt.Sprintf("<a href=\"%s\">Found</a>.\n", location)
-	conn := "close"
-	if keepAlive {
-		conn = "keep-alive"
+	return panelResp{
+		status: 302, reason: "Found",
+		middle: [][2]string{
+			{"Location", location},
+			{"Content-Type", "text/html; charset=utf-8"},
+			{"Content-Length", fmt.Sprintf("%d", len(body))},
+			{"X-Content-Type-Options", "nosniff"},
+			{"X-Frame-Options", "sameorigin"},
+		},
+		body: []byte(body),
 	}
-	resp := fmt.Sprintf("HTTP/1.1 302 Found\r\nDate: %s\r\nLocation: %s\r\nContent-Type: text/html; charset=utf-8\r\n"+
-		"Content-Length: %d\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: sameorigin\r\nConnection: %s\r\n\r\n%s",
-		time.Now().UTC().Format(time.RFC1123), location, len(body), conn, body)
-	_, err := w.Write([]byte(resp))
-	return err
-}
-
-// writeDAAsset serves one embedded Evolution asset with an immutable cache header.
-func writeDAAsset(w io.Writer, name, contentType string, keepAlive bool) error {
-	b, err := daAssets.ReadFile("daassets/" + name)
-	if err != nil {
-		return writeDA(w, 404, "text/html; charset=utf-8", "Not Found", keepAlive)
-	}
-	conn := "close"
-	if keepAlive {
-		conn = "keep-alive"
-	}
-	hdr := fmt.Sprintf("HTTP/1.1 200 OK\r\nDate: %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n"+
-		"Cache-Control: public, max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\nConnection: %s\r\n\r\n",
-		time.Now().UTC().Format(time.RFC1123), contentType, len(b), conn)
-	if _, err := w.Write([]byte(hdr)); err != nil {
-		return err
-	}
-	_, err = w.Write(b)
-	return err
 }
