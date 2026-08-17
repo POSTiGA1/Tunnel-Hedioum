@@ -17,7 +17,7 @@ import (
 func conventionalPorts() map[string]int {
 	return map[string]int{
 		"ssh": 22, "tls": 443, "smtp": 587, "imap": 143, "smtps": 465, "imaps": 993,
-		"directadmin": 2222, "https-alt": 8443, "docker": 5000, "postgres": 5432, "mysql": 3306,
+		"directadmin": 2222, "https-alt": 8443, "docker": 5000, "grafana": 3000, "postgres": 5432, "mysql": 3306,
 	}
 }
 
@@ -210,7 +210,7 @@ func cmdEditForeign(args []string) {
 	portMap := map[string]int{"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort, "smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort}
 	// New-arsenal mimics (https-alt/docker/postgres/mysql) keep their resolved port
 	// (conventional default or the value already pinned in config); no extra flags.
-	for _, ty := range []string{"https-alt", "docker", "postgres", "mysql"} {
+	for _, ty := range []string{"https-alt", "docker", "grafana", "postgres", "mysql"} {
 		portMap[ty] = ports[ty]
 	}
 	for label, p := range portMap {
@@ -307,7 +307,7 @@ func cmdEditNode(args []string) {
 	portMap := map[string]int{"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort, "smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort}
 	// New-arsenal mimics (https-alt/docker/postgres/mysql) keep their resolved port
 	// (conventional default or the value already pinned in config); no extra flags.
-	for _, ty := range []string{"https-alt", "docker", "postgres", "mysql"} {
+	for _, ty := range []string{"https-alt", "docker", "grafana", "postgres", "mysql"} {
 		portMap[ty] = ports[ty]
 	}
 	for label, p := range portMap {

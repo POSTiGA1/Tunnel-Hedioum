@@ -24,10 +24,10 @@ func hubYamuxConfig() *yamux.Config {
 // clientMimicFor builds the client camouflage for an endpoint's mimic type.
 func clientMimicFor(ep config.Endpoint, token string) mimic.ClientMimic {
 	switch ep.Mimic {
-	case "tls", "smtps", "imaps", "directadmin", "https-alt", "docker":
-		// Implicit TLS: smtps/imaps/directadmin/https-alt/docker all share the plain
-		// TLS mimic on different ports (the disguise is server-side: the panel/registry
-		// decoy shown to unauthorized probes).
+	case "tls", "smtps", "imaps", "directadmin", "https-alt", "docker", "grafana":
+		// Implicit TLS: smtps/imaps/directadmin/https-alt/docker/grafana all share the
+		// plain TLS mimic on different ports (the disguise is server-side: the panel/
+		// registry decoy shown to unauthorized probes).
 		return &mimic.TLSClient{Token: token, ServerName: ep.ServerName}
 	case "smtp", "imap", "postgres", "mysql":
 		return &mimic.StartTLSClient{Proto: ep.Mimic, TLS: &mimic.TLSClient{Token: token, ServerName: ep.ServerName}}

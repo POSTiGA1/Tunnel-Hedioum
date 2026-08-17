@@ -153,6 +153,17 @@ func buildServerMimic(cfg *config.AppConfig, ml config.MimicListener, filter *se
 			DecoyAddr:      ml.Decoy,
 			Decoy:          mimic.ServeDockerRegistry,
 		}, nil
+	case "grafana":
+		// Grafana persona on :3000 — implicit TLS; an unauthorized probe gets the
+		// default Grafana login + the unauthenticated /api/health JSON.
+		return &mimic.TLSMimic{
+			Token:          cfg.AuthToken,
+			Filter:         filter,
+			GetCertificate: certMgr.GetCertificate,
+			NextProtos:     certMgr.NextProtos(),
+			DecoyAddr:      ml.Decoy,
+			Decoy:          mimic.ServeGrafana,
+		}, nil
 	case "directadmin":
 		// The DirectAdmin panel persona on :2222. It presents the real (ACME) cert
 		// when a domain is configured — exactly like a well-run panel with a hostname
