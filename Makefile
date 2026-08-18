@@ -14,7 +14,7 @@ DATE   ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # -X injects build metadata (Version stays the AppVersion const used by self-update).
 LDFLAGS=-ldflags="-s -w -X main.Commit=$(COMMIT) -X main.Date=$(DATE)"
 
-.PHONY: all build-linux build-linux-arm64 clean fmt deps
+.PHONY: all build-linux build-linux-arm64 build-linux-armv7 docker docker-multiarch clean fmt deps
 
 all: build-linux build-linux-arm64
 
@@ -29,6 +29,22 @@ build-linux-arm64: deps fmt
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
 	@echo "[✓] ARM64 Build complete! Static binary is ready at: $(BUILD_DIR)/$(BINARY_NAME)-arm64"
+
+build-linux-armv7: deps fmt
+	@echo "Building Linux ARMv7 static binary (older ARM MikroTik / SBCs)..."
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-armv7 $(MAIN_PATH)
+	@echo "[✓] ARMv7 Build complete! Static binary is ready at: $(BUILD_DIR)/$(BINARY_NAME)-armv7"
+
+# Build a single-arch container image for the host architecture.
+docker:
+	docker build -t hedioum/pool-tunnel:latest .
+
+# Build and push a multi-arch image (amd64 + arm64 + armv7). Requires a buildx
+# builder and a logged-in registry; override IMAGE to your repo/tag.
+IMAGE ?= hedioum/pool-tunnel:latest
+docker-multiarch:
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t $(IMAGE) --push .
 
 clean:
 	@echo "Cleaning up build artifacts..."

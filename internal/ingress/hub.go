@@ -10,6 +10,7 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/pool"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tundev"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tunproto"
 )
 
@@ -30,6 +31,12 @@ func StartIranHub(cfg *config.AppConfig) {
 		go startLocalSocksListener(nodeCopy, hubManager)
 	}
 
+	// Bring up an OS-level TUN interface for every node that opted in. TUN mirrors
+	// the per-node SOCKS port: each enabled node gets its own interface + /24 and
+	// routes into that node's exit. Failure to start one TUN is non-fatal — SOCKS
+	// stays fully available (graceful fallback on non-Linux hosts too).
+	tunInstances := startTunInterfaces(cfg.ForeignNodes)
+
 	if len(cfg.ForeignNodes) == 0 {
 		slog.Warn("iran hub started with no foreign nodes; add a node and restart")
 	}
@@ -38,6 +45,42 @@ func StartIranHub(cfg *config.AppConfig) {
 	// other goroutines, and select{} would trip the runtime's deadlock detector
 	// and crash-loop the service.
 	sysutil.WaitForTerminationSignal()
+
+	// Tear the TUN interfaces down cleanly on shutdown so a restart can re-open them.
+	for _, inst := range tunInstances {
+		_ = inst.Close()
+	}
+}
+
+// startTunInterfaces opens a TUN interface for each TUN-enabled node and returns
+// the running instances (to close on shutdown). Nodes without TUN are skipped;
+// a per-node failure is logged and does not stop the others or the SOCKS path.
+func startTunInterfaces(nodes []config.ForeignNode) []*tundev.Instance {
+	var instances []*tundev.Instance
+	for _, node := range nodes {
+		if !node.TunEnabled {
+			continue
+		}
+		if node.TunName == "" || node.TunAddr == "" {
+			slog.Warn("TUN enabled but interface/address missing; skipping", "node", node.Alias)
+			continue
+		}
+		inst, err := tundev.Start(tundev.Node{
+			Name:      node.TunName,
+			Addr:      node.TunAddr,
+			SocksAddr: fmt.Sprintf("127.0.0.1:%d", node.LocalSocksPort),
+			EnableDNS: node.DNSEnabled,
+		})
+		if err != nil {
+			slog.Warn("TUN not started for node (SOCKS still active)",
+				"node", node.Alias, "iface", node.TunName, "err", err)
+			continue
+		}
+		slog.Info("TUN egress active",
+			"node", node.Alias, "iface", node.TunName, "addr", node.TunAddr, "dns", node.DNSEnabled)
+		instances = append(instances, inst)
+	}
+	return instances
 }
 
 // startLocalSocksListener boots up a TCP server listening exclusively on 127.0.0.1.

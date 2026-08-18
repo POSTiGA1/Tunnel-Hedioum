@@ -299,6 +299,8 @@ func cmdSetupForeign(args []string) {
 		color.Yellow("    or re-run with --public-ip <ip> to emit a paste-only pairing token.")
 		fmt.Printf("Auth Token: %s\n", tok)
 	}
+	// The foreign never runs TUN: keep its unit locked to CAP_NET_BIND_SERVICE.
+	reconcileUnit("foreign")
 	// Apply immediately: without a restart the daemon keeps its old config (old
 	// mimics AND old token), which silently breaks the link after re-provisioning.
 	restartDaemon()
@@ -339,6 +341,10 @@ func cmdAddNode(args []string) {
 	max := fs.Int("max", 0, "max connections (0 = profile)")
 	bw := fs.Int("bw", 0, "per-connection Mbps cap (0 = profile)")
 	jitter := fs.Int("jitter", -1, "bandwidth jitter Mbps (-1 = profile)")
+	tun := fs.Bool("tun", false, "also expose this node as a TUN network interface (opt-in)")
+	tunName := fs.String("tun-name", "", "TUN interface name (default: auto, e.g. hedioum0)")
+	tunAddr := fs.String("tun-addr", "", "TUN gateway CIDR (default: auto, e.g. 10.200.0.1/24)")
+	dns := fs.Bool("dns", false, "run a :53 DNS forwarder on the TUN gateway IP (requires --tun)")
 	_ = fs.Parse(args)
 
 	if *alias == "" {
@@ -475,11 +481,37 @@ func cmdAddNode(args []string) {
 		fail("existing config role is %q, not iran", cfg.Role)
 	}
 
+	// TUN mode (opt-in). Auto-assign a free interface/subnet if the operator did not
+	// pin one; --dns implies :53 on the gateway IP and needs TUN.
+	tunEnabled := *tun
+	tName, tAddr := *tunName, *tunAddr
+	if *dns && !tunEnabled {
+		fail("--dns requires --tun")
+	}
+	if tunEnabled {
+		if tName == "" || tAddr == "" {
+			autoName, autoAddr := nextFreeTun(cfg)
+			if tName == "" {
+				tName = autoName
+			}
+			if tAddr == "" {
+				tAddr = autoAddr
+			}
+		}
+		if _, _, err := net.ParseCIDR(tAddr); err != nil {
+			fail("--tun-addr: %v", err)
+		}
+	}
+
 	cfg.UpdateForeignNode(config.ForeignNode{
 		Alias:               *alias,
 		LocalSocksPort:      *socksPort,
 		AuthToken:           authKey,
 		Endpoints:           endpoints,
+		TunEnabled:          tunEnabled,
+		TunName:             tName,
+		TunAddr:             tAddr,
+		DNSEnabled:          *dns,
 		MinConnections:      pMin,
 		MaxConnections:      pMax,
 		BandwidthLimitMbps:  pBw,
@@ -493,6 +525,15 @@ func cmdAddNode(args []string) {
 		labels[i] = e.Mimic + "@" + e.Target
 	}
 	color.Green("[✓] Node %q added (socks %d, endpoints: %s).", *alias, *socksPort, strings.Join(labels, ", "))
+	if tunEnabled {
+		msg := fmt.Sprintf("[✓] TUN mode on: %s @ %s (gateway %s)", tName, tAddr, tunGatewayIP(tAddr))
+		if *dns {
+			msg += fmt.Sprintf(", DNS forwarder on %s:53", tunGatewayIP(tAddr))
+		}
+		color.Green(msg)
+	}
+	// The hub is TUN-capable: make sure the installed unit grants CAP_NET_ADMIN.
+	reconcileUnit("iran")
 	restartDaemon()
 }
 

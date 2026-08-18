@@ -1,18 +1,48 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
 	"flag"
 	"io"
 	"os"
 	"os/exec"
+	"text/template"
 
 	"github.com/fatih/color"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 )
 
 //go:embed hedioum.service.tmpl
 var systemdUnit string
+
+// renderUnit fills the systemd unit template. tunCapable adds CAP_NET_ADMIN so
+// the hub can bring up an opt-in TUN interface; the foreign leaves it off.
+func renderUnit(tunCapable bool) string {
+	t, err := template.New("unit").Parse(systemdUnit)
+	if err != nil {
+		return systemdUnit // template is compiled-in; parse cannot realistically fail
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, struct{ TunCapable bool }{tunCapable}); err != nil {
+		return systemdUnit
+	}
+	return buf.String()
+}
+
+// reconcileUnit rewrites the installed unit to match the node's role (the hub is
+// TUN-capable, the foreign is not) and reloads systemd. Best-effort: it is a no-op
+// when the service is not installed or we are not privileged.
+func reconcileUnit(role string) {
+	if _, err := os.Stat(installUnitPath); err != nil {
+		return // not installed under systemd (e.g. dev run)
+	}
+	if err := os.WriteFile(installUnitPath, []byte(renderUnit(role == "iran")), 0644); err != nil {
+		return
+	}
+	_ = exec.Command("systemctl", "daemon-reload").Run()
+}
 
 const (
 	installBinPath  = "/usr/local/bin/hedioum-tunnel"
@@ -44,7 +74,15 @@ func cmdInstall(args []string) {
 	}
 	color.Green("[✓] Binary installed to %s", installBinPath)
 
-	if err := os.WriteFile(installUnitPath, []byte(systemdUnit), 0644); err != nil {
+	// Render the unit for the role already configured on this box, if any. A fresh
+	// install with no config yet is TUN-capable by default (the hub is the TUN user);
+	// setup-foreign later re-renders it locked-down. This keeps the foreign minimal
+	// while ensuring the hub has CAP_NET_ADMIN ready for an opt-in TUN.
+	tunCapable := true
+	if cfg, err := config.LoadConfig(); err == nil && cfg.Role == "foreign" {
+		tunCapable = false
+	}
+	if err := os.WriteFile(installUnitPath, []byte(renderUnit(tunCapable)), 0644); err != nil {
 		fail("failed to write systemd unit: %v", err)
 	}
 	_ = exec.Command("systemctl", "daemon-reload").Run()

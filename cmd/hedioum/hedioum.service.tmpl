@@ -17,8 +17,11 @@ RestartSec=5
 LimitNOFILE=1048576
 
 # --- Sandbox hardening ---
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_BIND_SERVICE
+# CAP_NET_ADMIN is granted only to the Iran hub, and only so an opt-in TUN
+# interface can be created/configured; the foreign stays bound to just
+# CAP_NET_BIND_SERVICE.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE{{if .TunCapable}} CAP_NET_ADMIN{{end}}
+AmbientCapabilities=CAP_NET_BIND_SERVICE{{if .TunCapable}} CAP_NET_ADMIN{{end}}
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/etc/hedioum

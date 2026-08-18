@@ -331,10 +331,37 @@ func cmdEditNode(args []string) {
 	jitter := fs.Int("jitter", node.BandwidthJitterMbps, "bandwidth jitter Mbps")
 	token := fs.String("token", "", "set a specific new auth token (default: keep current)")
 	rotateToken := fs.Bool("rotate-token", false, "generate a fresh auth token")
+	tun := fs.Bool("tun", node.TunEnabled, "expose this node as a TUN interface (opt-in)")
+	tunName := fs.String("tun-name", node.TunName, "TUN interface name (default: keep/auto)")
+	tunAddr := fs.String("tun-addr", node.TunAddr, "TUN gateway CIDR (default: keep/auto)")
+	dns := fs.Bool("dns", node.DNSEnabled, "run a :53 DNS forwarder on the TUN gateway IP (requires --tun)")
 	_ = fs.Parse(args)
 
 	if *targetIP == "" {
 		fail("--target-ip must not be empty")
+	}
+	if *dns && !*tun {
+		fail("--dns requires --tun")
+	}
+	// Resolve TUN settings, auto-assigning a free interface/subnet when enabling
+	// without an explicit one; disabling clears the fields.
+	tunEnabled := *tun
+	tName, tAddr := *tunName, *tunAddr
+	if tunEnabled {
+		if tName == "" || tAddr == "" {
+			autoName, autoAddr := nextFreeTun(cfg)
+			if tName == "" {
+				tName = autoName
+			}
+			if tAddr == "" {
+				tAddr = autoAddr
+			}
+		}
+		if _, _, err := net.ParseCIDR(tAddr); err != nil {
+			fail("--tun-addr: %v", err)
+		}
+	} else {
+		tName, tAddr = "", ""
 	}
 	types, err := expandMimics(*mimics)
 	if err != nil {
@@ -361,6 +388,10 @@ func cmdEditNode(args []string) {
 		LocalSocksPort:      *socksPort,
 		AuthToken:           newToken,
 		Endpoints:           buildEndpoints(*targetIP, types, portMap, *tlsServerName),
+		TunEnabled:          tunEnabled,
+		TunName:             tName,
+		TunAddr:             tAddr,
+		DNSEnabled:          *dns,
 		MinConnections:      *minC,
 		MaxConnections:      *maxC,
 		BandwidthLimitMbps:  *bw,
@@ -370,7 +401,11 @@ func cmdEditNode(args []string) {
 		fail("failed to save config: %v", err)
 	}
 	color.Green("[✓] Node %q updated (target %s, mimics: %s, socks %d).", alias, *targetIP, strings.Join(types, ","), *socksPort)
+	if tunEnabled {
+		color.Cyan("    TUN: %s @ %s%s", tName, tAddr, map[bool]string{true: ", DNS :53", false: ""}[*dns])
+	}
 	color.Cyan("    Auth token: %s", tokenNote)
+	reconcileUnit("iran")
 	restartDaemon()
 }
 

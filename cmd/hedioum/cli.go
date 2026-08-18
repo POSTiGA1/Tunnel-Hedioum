@@ -72,6 +72,10 @@ Usage:
   hedioum-tunnel add-node     [flags]    Append a foreign node to the hub config
       --alias NAME  --target HOST:PORT  --socks-port N  --token HEX
       [--min N --max N --bw N --jitter N]
+      [--tun [--tun-name hedioumN] [--tun-addr 10.200.N.1/24] [--dns]]
+          --tun also exposes the node as an OS-level interface (opt-in; SOCKS stays
+          on). --tun-name/--tun-addr auto-assign when omitted; --dns adds a leak-free
+          :53 forwarder on the gateway IP.
   hedioum-tunnel edit-node --alias NAME [flags]  Edit a node in place (only the flags
       you pass change; token kept unless --token/--rotate-token)
   hedioum-tunnel remove-node --alias NAME

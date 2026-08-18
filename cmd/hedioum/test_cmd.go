@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -84,6 +85,15 @@ func testNodeConnection(n config.ForeignNode) {
 		if _, err := net.InterfaceByName(n.TunName); err != nil {
 			color.Red("   ✗ interface %s is not up: %v", n.TunName, err)
 		} else {
+			// Bind test traffic to the gateway source IP and, via an isolated policy
+			// route, steer just that source into the TUN — so the check exercises the
+			// real datapath (source IP → TUN → SOCKS → foreign) without ever touching
+			// the host's main table or default route (SSH stays safe).
+			cleanup, routed := ensureTunTestRoute(gw, n.TunName)
+			defer cleanup()
+			if !routed {
+				color.Yellow("   ! no temporary test route installed (need root + iproute2); result may reflect the host route, not the TUN.")
+			}
 			runEgressChecks(tunHTTPClient(gw), foreignIP)
 			if n.DNSEnabled {
 				checkDNSForwarder(gw)
@@ -92,6 +102,35 @@ func testNodeConnection(n config.ForeignNode) {
 	} else {
 		color.HiBlack(" TUN egress: not enabled for this node (SOCKS only).")
 	}
+}
+
+// ensureTunTestRoute installs a temporary, isolated source-based route so that
+// packets originating from the TUN gateway IP are sent into the TUN interface,
+// then returns a cleanup func. It uses a dedicated routing table + rule priority
+// and never modifies the main table, so the host default route (and SSH) are
+// untouched. Best-effort: returns ok=false if iproute2/root is unavailable.
+func ensureTunTestRoute(gatewayIP, tunName string) (cleanup func(), ok bool) {
+	noop := func() {}
+	if _, err := exec.LookPath("ip"); err != nil {
+		return noop, false
+	}
+	const table = "5199"
+	const prio = "5199"
+	// Clear any stale leftovers from an interrupted run.
+	_ = exec.Command("ip", "rule", "del", "priority", prio).Run()
+	_ = exec.Command("ip", "route", "flush", "table", table).Run()
+
+	if err := exec.Command("ip", "route", "add", "default", "dev", tunName, "table", table).Run(); err != nil {
+		return noop, false
+	}
+	if err := exec.Command("ip", "rule", "add", "from", gatewayIP, "lookup", table, "priority", prio).Run(); err != nil {
+		_ = exec.Command("ip", "route", "flush", "table", table).Run()
+		return noop, false
+	}
+	return func() {
+		_ = exec.Command("ip", "rule", "del", "from", gatewayIP, "lookup", table, "priority", prio).Run()
+		_ = exec.Command("ip", "route", "flush", "table", table).Run()
+	}, true
 }
 
 // runEgressChecks verifies real egress through a client bound to the tunnel: the exit

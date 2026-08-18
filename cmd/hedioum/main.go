@@ -14,6 +14,7 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/firewall"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/ingress"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/logging"
+	"golang.org/x/term"
 )
 
 // AppVersion defines the current build version for the self-updater.
@@ -171,14 +172,16 @@ func firewallPorts(cfg *config.AppConfig) []int {
 	return ports
 }
 
-// isTerminal reports whether f is attached to an interactive character device
-// (a TTY) rather than a pipe, file, or /dev/null.
+// isTerminal reports whether f is attached to an interactive TTY rather than a
+// pipe, regular file, or /dev/null. It uses an ioctl (TCGETS) probe: a plain
+// ModeCharDevice check is not enough because /dev/null is itself a character
+// device, so under Docker (whose default stdin is /dev/null) it would falsely
+// look interactive and launch the wizard into an EOF loop.
 func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	if err != nil {
+	if f == nil {
 		return false
 	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	return term.IsTerminal(int(f.Fd()))
 }
 
 // printSetupHint prints the non-interactive configuration commands, shown when the

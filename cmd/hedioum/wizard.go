@@ -46,6 +46,9 @@ func runSetupWizard() *config.AppConfig {
 		color.Red("[x] Fatal: Failed to persist state: %v", err)
 		os.Exit(1)
 	}
+	// Align the systemd sandbox with the role: the hub is TUN-capable (CAP_NET_ADMIN),
+	// the foreign stays locked to CAP_NET_BIND_SERVICE.
+	reconcileUnit(cfg.Role)
 	color.Green("\n[✓] State provisioned successfully.")
 	return cfg
 }
@@ -333,6 +336,44 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 		})
 	}
 	color.Green("[✓] Endpoints: %d mimic(s) toward %s", len(node.Endpoints), node.TargetIP)
+
+	// Optional TUN mode: expose this node as an OS-level interface too, so it can be
+	// used by policy routing / a downstream router — not just as a SOCKS proxy. It is
+	// opt-in and never becomes the host default route.
+	enableTun := false
+	survey.AskOne(&survey.Confirm{
+		Message: "Also expose this node as a TUN network interface? (advanced; SOCKS always stays on)",
+		Default: false,
+		Help:    "Adds a virtual interface (e.g. hedioum0 @ 10.200.0.1/24) whose traffic egresses through this node. Leave off for a plain SOCKS-only node.",
+	}, &enableTun)
+	if enableTun {
+		autoName, autoAddr := nextFreeTun(cfg)
+		tunName := autoName
+		survey.AskOne(&survey.Input{Message: "TUN interface name:", Default: autoName}, &tunName)
+		tunAddr := autoAddr
+		survey.AskOne(&survey.Input{
+			Message: "TUN gateway CIDR:", Default: autoAddr,
+			Help: "The .1 host becomes this node's gateway IP; the /24 must not overlap the hub's existing LANs.",
+		}, &tunAddr)
+		if _, _, err := net.ParseCIDR(tunAddr); err != nil {
+			color.Yellow("[!] %q is not a valid CIDR; falling back to %s", tunAddr, autoAddr)
+			tunAddr = autoAddr
+		}
+		enableDNS := false
+		survey.AskOne(&survey.Confirm{
+			Message: fmt.Sprintf("Run a DNS forwarder on %s:53 (resolves through the tunnel)?", tunGatewayIP(tunAddr)),
+			Default: false,
+			Help:    "For gateway/router clients that need a leak-free resolver on the tunnel's own address.",
+		}, &enableDNS)
+		node.TunEnabled = true
+		node.TunName = tunName
+		node.TunAddr = tunAddr
+		node.DNSEnabled = enableDNS
+		color.Green("[✓] TUN mode: %s @ %s (gateway %s)", tunName, tunAddr, tunGatewayIP(tunAddr))
+		if enableDNS {
+			color.Green("[✓] DNS forwarder: %s:53", tunGatewayIP(tunAddr))
+		}
+	}
 
 	cfg.UpdateForeignNode(node)
 }
