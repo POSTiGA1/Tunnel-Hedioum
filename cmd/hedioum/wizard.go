@@ -11,6 +11,7 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/pairing"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/persona"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 )
@@ -262,6 +263,31 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 	node.TargetIP = answers.TargetIP
 	node.AuthToken = answers.AuthToken
 
+	// A v2 pairing token is self-contained: it overrides the IP and endpoint set, so
+	// the operator only has to paste it (the IP prompt above is ignored).
+	fromToken := false
+	if pt, isV2, err := pairing.Decode(strings.TrimSpace(answers.AuthToken)); err == nil && isV2 {
+		fromToken = true
+		node.TargetIP = pt.ExitIP
+		node.AuthToken = pt.AuthKey
+		for _, ty := range mimicTypesAll {
+			if port, ok := pt.Endpoints[ty]; ok {
+				sni := ""
+				if ty != "ssh" {
+					sni = pt.SNI
+				}
+				node.Endpoints = append(node.Endpoints, config.Endpoint{
+					Target: net.JoinHostPort(pt.ExitIP, strconv.Itoa(port)), Mimic: ty, ServerName: sni,
+				})
+			}
+		}
+		label := pt.Persona
+		if label == "" {
+			label = "custom"
+		}
+		color.Green("[✓] Pairing token: %s persona, %d endpoints @ %s", label, len(node.Endpoints), pt.ExitIP)
+	}
+
 	// Safely parse all integer inputs, falling back to defaults if empty or invalid (0)
 	node.TargetPort = safeAtoi(answers.TargetPort, 22)
 	node.LocalSocksPort = safeAtoi(answers.LocalSocksPort, safeAtoi(suggestedSocksPort, 40001))
@@ -270,29 +296,32 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 	node.BandwidthLimitMbps = safeAtoi(answers.BandwidthLimit, 8)
 	node.BandwidthJitterMbps = safeAtoi(answers.BandwidthJitter, 2)
 
-	// Which mimics to reach this node over — must match what the foreign runs. Since
-	// the persona is deterministic from the token, "auto" derives the exact set the
+	// Which mimics to reach this node over — must match what the foreign runs. A v2
+	// pairing token already populated the endpoints above; otherwise, since the
+	// persona is deterministic from the token, "auto" derives the exact set the
 	// foreign chose; or match a named persona, or pick manually.
 	var mimicTypes []string
-	hubPersonaChoice := ""
-	survey.AskOne(&survey.Select{
-		Message: "Match the foreign's mimic set:",
-		Options: append([]string{"auto (from token)"}, append(persona.Names(), "custom (choose mimics)")...),
-		Default: "auto (from token)",
-		Help:    "auto derives the foreign's persona from the shared token. Or force a named persona, or pick individual mimics.",
-	}, &hubPersonaChoice)
-	if strings.HasPrefix(hubPersonaChoice, "custom") {
-		mimicTypes = promptMimics()
-	} else {
-		name := strings.Fields(hubPersonaChoice)[0]
-		if name == "auto" {
-			name = persona.Auto(node.AuthToken)
-		}
-		if types, err := persona.Resolve(name, node.AuthToken); err == nil {
-			mimicTypes = types
-			color.Green("[✓] Persona %q → %d endpoints", name, len(types))
-		} else {
+	if !fromToken {
+		hubPersonaChoice := ""
+		survey.AskOne(&survey.Select{
+			Message: "Match the foreign's mimic set:",
+			Options: append([]string{"auto (from token)"}, append(persona.Names(), "custom (choose mimics)")...),
+			Default: "auto (from token)",
+			Help:    "auto derives the foreign's persona from the shared token. Or force a named persona, or pick individual mimics.",
+		}, &hubPersonaChoice)
+		if strings.HasPrefix(hubPersonaChoice, "custom") {
 			mimicTypes = promptMimics()
+		} else {
+			name := strings.Fields(hubPersonaChoice)[0]
+			if name == "auto" {
+				name = persona.Auto(node.AuthToken)
+			}
+			if types, err := persona.Resolve(name, node.AuthToken); err == nil {
+				mimicTypes = types
+				color.Green("[✓] Persona %q → %d endpoints", name, len(types))
+			} else {
+				mimicTypes = promptMimics()
+			}
 		}
 	}
 	// Populating Endpoints is what enables the multi-mimic arsenal — without it the
