@@ -94,14 +94,14 @@ func TestProbeEndpointWrongToken(t *testing.T) {
 	}
 }
 
-// TestEndpointPickerAlwaysValid checks the Chaos-Mesh weighted picker: a single
-// endpoint is returned as-is, and with several endpoints every pick is a real
-// configured endpoint (weights are sane, no out-of-range index).
+// TestEndpointPickerAlwaysValid checks the Chaos-Mesh weighted primary pick (the
+// first entry of attemptOrder): a single endpoint is returned as-is, and with several
+// endpoints every primary pick is a real configured endpoint that appears over time.
 func TestEndpointPickerAlwaysValid(t *testing.T) {
 	single := config.ForeignNode{Endpoints: []config.Endpoint{{Target: "1.2.3.4:22", Mimic: "ssh"}}}
 	d := newEndpointDialer(single)
-	if got := d.pick(); got.Mimic != "ssh" {
-		t.Fatalf("single-endpoint pick = %+v", got)
+	if got := d.attemptOrder(); len(got) != 1 || got[0].Mimic != "ssh" {
+		t.Fatalf("single-endpoint order = %+v", got)
 	}
 
 	multi := config.ForeignNode{Endpoints: []config.Endpoint{
@@ -116,15 +116,13 @@ func TestEndpointPickerAlwaysValid(t *testing.T) {
 	valid := map[string]bool{"ssh": true, "tls": true, "imaps": true}
 	seen := map[string]int{}
 	for i := 0; i < 300; i++ {
-		ep := d.pick()
+		ep := d.attemptOrder()[0] // the weighted primary pick
 		if !valid[ep.Mimic] {
-			t.Fatalf("pick returned an unknown endpoint: %+v", ep)
+			t.Fatalf("primary pick returned an unknown endpoint: %+v", ep)
 		}
 		seen[ep.Mimic]++
 	}
-	// Over 300 weighted draws all three should appear at least once (weights are
-	// 0.3+rand, so none is ever zero).
 	if len(seen) != 3 {
-		t.Fatalf("expected all 3 endpoints to be picked, saw %v", seen)
+		t.Fatalf("expected all 3 endpoints to be primary-picked, saw %v", seen)
 	}
 }
