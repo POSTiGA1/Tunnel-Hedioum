@@ -31,7 +31,11 @@ func TestContainsStr(t *testing.T) {
 // TestAllMimicsComplete guards that the wizard's arsenal list stays in sync with
 // the supported mimic types (so "all" really means all).
 func TestAllMimicsComplete(t *testing.T) {
-	want := map[string]bool{"ssh": true, "tls": true, "smtp": true, "imap": true, "smtps": true, "imaps": true, "directadmin": true}
+	want := map[string]bool{
+		"ssh": true, "tls": true, "https-alt": true, "smtp": true, "imap": true,
+		"smtps": true, "imaps": true, "directadmin": true, "docker": true, "grafana": true, "prometheus": true,
+		"cpanel": true, "whm": true, "webmail": true, "postgres": true, "mysql": true,
+	}
 	if len(allMimics) != len(want) {
 		t.Fatalf("allMimics = %v, want %d types", allMimics, len(want))
 	}

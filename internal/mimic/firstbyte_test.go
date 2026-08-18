@@ -2,6 +2,7 @@ package mimic
 
 import (
 	"crypto/tls"
+	"math/bits"
 	"net"
 	"sync"
 	"testing"
@@ -10,6 +11,12 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/securestream"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/tlscert"
 )
+
+// firstByteCap is how many leading wire bytes we inspect. Wide enough to contain a
+// full protocol prologue (e.g. a MySQL greeting's "mysql_native_password" run), so
+// the printable-run exemption (Ex4) is evaluated on what the GFW actually sees in
+// the first packet.
+const firstByteCap = 128
 
 // This is the regression guard for the single most important low-level stealth
 // property: every mimic's FIRST bytes on the wire must be "protocol-shaped" (a
@@ -29,10 +36,10 @@ type firstWriteTap struct {
 
 func (t *firstWriteTap) Write(p []byte) (int, error) {
 	t.mu.Lock()
-	if len(t.buf) < 16 {
+	if len(t.buf) < firstByteCap {
 		t.buf = append(t.buf, p...)
-		if len(t.buf) > 16 {
-			t.buf = t.buf[:16]
+		if len(t.buf) > firstByteCap {
+			t.buf = t.buf[:firstByteCap]
 		}
 	}
 	t.mu.Unlock()
@@ -47,25 +54,66 @@ func (t *firstWriteTap) first() []byte {
 	return b
 }
 
-// protocolShaped implements the GFW exemption test: the prefix is a TLS record
-// (0x16 0x03 ...) OR its first up-to-6 bytes are all printable ASCII.
+// protocolShaped models the GFW's fully-encrypted-traffic classifier (Wu et al.,
+// USENIX Security 2023): a flow is blocked only if it looks random, i.e. NONE of the
+// exemptions hold. A mimic prefix must hit at least one:
+//   - a TLS record header (0x16 0x03) at the start (or right after a 1-byte prefix
+//     such as PostgreSQL's 'S' SSL-OK reply);
+//   - Ex1: average popcount per byte <= 3.4 or >= 4.6 (too ordered to be ciphertext);
+//   - Ex2: the first up-to-6 bytes are all printable ASCII;
+//   - Ex3: more than 50% of the bytes are printable ASCII;
+//   - Ex4: the longest run of printable ASCII is >= 20 bytes.
 func protocolShaped(b []byte) bool {
 	if len(b) == 0 {
 		return false
 	}
-	if len(b) >= 2 && b[0] == 0x16 && b[1] == 0x03 {
-		return true // TLS record header (ClientHello / ServerHello)
+	// TLS record header at offset 0..2 (covers 'S'+TLS and other 1-byte prologues).
+	for i := 0; i+1 < len(b) && i <= 2; i++ {
+		if b[i] == 0x16 && b[i+1] == 0x03 {
+			return true
+		}
 	}
+	// Ex1: bit-density.
+	setBits := 0
+	for _, c := range b {
+		setBits += bits.OnesCount8(c)
+	}
+	avg := float64(setBits) / float64(len(b))
+	if avg <= 3.4 || avg >= 4.6 {
+		return true
+	}
+	// Ex2: first up-to-6 bytes all printable.
 	n := len(b)
 	if n > 6 {
 		n = 6
 	}
+	ex2 := true
 	for _, c := range b[:n] {
-		if c < 0x20 || c > 0x7e { // strictly printable ASCII
-			return false
+		if c < 0x20 || c > 0x7e {
+			ex2 = false
+			break
 		}
 	}
-	return true
+	if ex2 {
+		return true
+	}
+	// Ex3 / Ex4: printable fraction and longest printable run.
+	printable, run, longest := 0, 0, 0
+	for _, c := range b {
+		if c >= 0x20 && c <= 0x7e {
+			printable++
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	if printable*2 > len(b) { // >50%
+		return true
+	}
+	return longest >= 20
 }
 
 func tlsFirstByteServer(t *testing.T, token string) *TLSMimic {
@@ -96,6 +144,11 @@ func TestMimicFirstBytesProtocolShaped(t *testing.T) {
 		{"tls", tlsFirstByteServer(t, token), &TLSClient{Token: token, ServerName: "example"}},
 		{"smtp", &StartTLSMimic{Proto: "smtp", TLS: tlsFirstByteServer(t, token)}, &StartTLSClient{Proto: "smtp", TLS: &TLSClient{Token: token, ServerName: "example"}}},
 		{"imap", &StartTLSMimic{Proto: "imap", TLS: tlsFirstByteServer(t, token)}, &StartTLSClient{Proto: "imap", TLS: &TLSClient{Token: token, ServerName: "example"}}},
+		// postgres: client SSLRequest (low popcount) -> server 'S' + TLS. mysql:
+		// server v10 greeting (printable version/plugin run) -> client SSL-request
+		// (low popcount). docker/https-alt are implicit TLS, covered by "tls".
+		{"postgres", &StartTLSMimic{Proto: "postgres", TLS: tlsFirstByteServer(t, token)}, &StartTLSClient{Proto: "postgres", TLS: &TLSClient{Token: token, ServerName: "example"}}},
+		{"mysql", &StartTLSMimic{Proto: "mysql", TLS: tlsFirstByteServer(t, token)}, &StartTLSClient{Proto: "mysql", TLS: &TLSClient{Token: token, ServerName: "example"}}},
 	}
 
 	for _, tc := range cases {
@@ -151,10 +204,12 @@ func TestMimicFirstBytesProtocolShaped(t *testing.T) {
 // TestProtocolShapedHelper locks the exemption predicate itself.
 func TestProtocolShapedHelper(t *testing.T) {
 	good := [][]byte{
-		[]byte("SSH-2.0-OpenSSH_8.9"),  // SSH banner
-		[]byte("220 mail ESMTP"),       // SMTP greeting
-		[]byte("* OK [CAPABILITY"),     // IMAP greeting
-		{0x16, 0x03, 0x01, 0x00, 0x05}, // TLS record
+		[]byte("SSH-2.0-OpenSSH_8.9"),                    // SSH banner (printable)
+		[]byte("220 mail ESMTP"),                         // SMTP greeting (printable)
+		[]byte("* OK [CAPABILITY"),                       // IMAP greeting (printable)
+		{0x16, 0x03, 0x01, 0x00, 0x05},                   // TLS record header
+		{0x53, 0x16, 0x03, 0x03, 0x00, 0x50},             // Postgres 'S' + TLS record
+		{0x00, 0x00, 0x00, 0x08, 0x04, 0xd2, 0x16, 0x2f}, // Postgres SSLRequest (low popcount, Ex1)
 	}
 	for _, b := range good {
 		if !protocolShaped(b) {
@@ -162,9 +217,8 @@ func TestProtocolShapedHelper(t *testing.T) {
 		}
 	}
 	bad := [][]byte{
-		{0x9f, 0x2c, 0xe1, 0x77, 0x04, 0xbb}, // high-entropy
+		{0x9f, 0x2c, 0xe1, 0x77, 0x04, 0xbb}, // random-looking, ~4.3 bits/byte, no printable structure
 		{},                                   // empty
-		{0x00, 0x01, 0x02, 0x03, 0x04, 0x05}, // non-printable, non-TLS
 	}
 	for _, b := range bad {
 		if protocolShaped(b) {

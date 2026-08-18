@@ -17,19 +17,38 @@ import (
 // "all" means the whole arsenal — the same as the interactive wizard's "all"
 // checkbox, so CLI and wizard agree (a mismatch left the two ends of a link on
 // different mimic sets).
+// mimicTypesAll is the whole implemented arsenal, in a stable order. "all" expands
+// to this; the wizard and validators share it so CLI and wizard never disagree.
+var mimicTypesAll = []string{
+	"ssh", "tls", "https-alt", "smtp", "imap", "smtps", "imaps",
+	"directadmin", "docker", "grafana", "prometheus",
+	"cpanel", "whm", "webmail", "postgres", "mysql",
+}
+
+func validMimicType(t string) bool {
+	for _, m := range mimicTypesAll {
+		if m == t {
+			return true
+		}
+	}
+	return false
+}
+
 func expandMimics(spec string) ([]string, error) {
 	if spec == "all" {
-		return []string{"ssh", "tls", "smtp", "imap", "smtps", "imaps", "directadmin"}, nil
+		out := make([]string, len(mimicTypesAll))
+		copy(out, mimicTypesAll)
+		return out, nil
 	}
 	var out []string
 	for _, p := range strings.Split(spec, ",") {
 		p = strings.TrimSpace(p)
-		switch p {
-		case "ssh", "tls", "smtp", "imap", "smtps", "imaps", "directadmin":
+		switch {
+		case p == "":
+		case validMimicType(p):
 			out = append(out, p)
-		case "":
 		default:
-			return nil, fmt.Errorf("unknown mimic %q (want ssh|tls|smtp|imap|smtps|imaps|directadmin|all)", p)
+			return nil, fmt.Errorf("unknown mimic %q (want one of %s|all)", p, strings.Join(mimicTypesAll, "|"))
 		}
 	}
 	if len(out) == 0 {
@@ -59,8 +78,17 @@ func cmdSetupForeign(args []string) {
 	smtpsPort := fs.Int("smtps-port", 465, "SMTPS (implicit TLS) mimic public port")
 	imapsPort := fs.Int("imaps-port", 993, "IMAPS (implicit TLS) mimic public port")
 	daPort := fs.Int("directadmin-port", 2222, "DirectAdmin panel mimic port")
+	httpsAltPort := fs.Int("https-alt-port", 8443, "alt-HTTPS (implicit TLS) mimic port")
+	dockerPort := fs.Int("docker-port", 5000, "Docker Registry (implicit TLS) mimic port")
+	grafanaPort := fs.Int("grafana-port", 3000, "Grafana (implicit TLS) mimic port")
+	promPort := fs.Int("prometheus-port", 9090, "Prometheus (implicit TLS) mimic port")
+	cpanelPort := fs.Int("cpanel-port", 2083, "cPanel (implicit TLS) mimic port")
+	whmPort := fs.Int("whm-port", 2087, "WHM (implicit TLS) mimic port")
+	webmailPort := fs.Int("webmail-port", 2096, "Webmail (implicit TLS) mimic port")
+	pgPort := fs.Int("postgres-port", 5432, "PostgreSQL (STARTTLS) mimic port")
+	mysqlPort := fs.Int("mysql-port", 3306, "MySQL/MariaDB (STARTTLS) mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI/CN (optional)")
-	mimics := fs.String("mimics", "ssh", "camouflage: ssh|tls|smtp|imap|smtps|imaps|directadmin|all or a comma list")
+	mimics := fs.String("mimics", "ssh", "camouflage: ssh|tls|https-alt|smtp|imap|smtps|imaps|directadmin|docker|postgres|mysql|all or a comma list")
 	domain := fs.String("domain", "", "real domain for a Let's Encrypt cert (recommended; empty = self-signed)")
 	acmeEmail := fs.String("acme-email", "", "Let's Encrypt account email (optional)")
 	decoyStyle := fs.String("decoy-style", "apache", "camouflage persona: apache|directadmin")
@@ -126,6 +154,51 @@ func cmdSetupForeign(args []string) {
 				fail("--directadmin-port: %v", err)
 			}
 			mimicList = append(mimicList, config.MimicListener{Type: "directadmin", Port: *daPort, ServerName: *tlsServerName})
+		case "https-alt":
+			if err := validPort(*httpsAltPort); err != nil {
+				fail("--https-alt-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "https-alt", Port: *httpsAltPort, ServerName: *tlsServerName})
+		case "docker":
+			if err := validPort(*dockerPort); err != nil {
+				fail("--docker-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "docker", Port: *dockerPort, ServerName: *tlsServerName})
+		case "grafana":
+			if err := validPort(*grafanaPort); err != nil {
+				fail("--grafana-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "grafana", Port: *grafanaPort, ServerName: *tlsServerName})
+		case "prometheus":
+			if err := validPort(*promPort); err != nil {
+				fail("--prometheus-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "prometheus", Port: *promPort, ServerName: *tlsServerName})
+		case "cpanel":
+			if err := validPort(*cpanelPort); err != nil {
+				fail("--cpanel-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "cpanel", Port: *cpanelPort, ServerName: *tlsServerName})
+		case "whm":
+			if err := validPort(*whmPort); err != nil {
+				fail("--whm-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "whm", Port: *whmPort, ServerName: *tlsServerName})
+		case "webmail":
+			if err := validPort(*webmailPort); err != nil {
+				fail("--webmail-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "webmail", Port: *webmailPort, ServerName: *tlsServerName})
+		case "postgres":
+			if err := validPort(*pgPort); err != nil {
+				fail("--postgres-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "postgres", Port: *pgPort, ServerName: *tlsServerName})
+		case "mysql":
+			if err := validPort(*mysqlPort); err != nil {
+				fail("--mysql-port: %v", err)
+			}
+			mimicList = append(mimicList, config.MimicListener{Type: "mysql", Port: *mysqlPort, ServerName: *tlsServerName})
 		}
 	}
 	if *moveSSH {
@@ -191,6 +264,15 @@ func cmdAddNode(args []string) {
 	smtpsPort := fs.Int("smtps-port", 465, "foreign SMTPS (implicit TLS) mimic port")
 	imapsPort := fs.Int("imaps-port", 993, "foreign IMAPS (implicit TLS) mimic port")
 	daPort := fs.Int("directadmin-port", 2222, "foreign DirectAdmin panel mimic port")
+	httpsAltPort := fs.Int("https-alt-port", 8443, "foreign alt-HTTPS mimic port")
+	dockerPort := fs.Int("docker-port", 5000, "foreign Docker Registry mimic port")
+	grafanaPort := fs.Int("grafana-port", 3000, "foreign Grafana mimic port")
+	promPort := fs.Int("prometheus-port", 9090, "foreign Prometheus mimic port")
+	cpanelPort := fs.Int("cpanel-port", 2083, "foreign cPanel mimic port")
+	whmPort := fs.Int("whm-port", 2087, "foreign WHM mimic port")
+	webmailPort := fs.Int("webmail-port", 2096, "foreign Webmail mimic port")
+	pgPort := fs.Int("postgres-port", 5432, "foreign PostgreSQL (STARTTLS) mimic port")
+	mysqlPort := fs.Int("mysql-port", 3306, "foreign MySQL (STARTTLS) mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI (set to the foreign's domain for a real cert)")
 	socksPort := fs.Int("socks-port", 0, "local SOCKS5 bind port")
 	token := fs.String("token", "", "auth token from the foreign node")
@@ -221,12 +303,24 @@ func cmdAddNode(args []string) {
 		if err != nil {
 			fail("--mimics: %v", err)
 		}
-		for label, p := range map[string]int{"ssh-port": *sshPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort, "smtps-port": *smtpsPort, "imaps-port": *imapsPort} {
+		for label, p := range map[string]int{
+			"ssh-port": *sshPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort,
+			"smtps-port": *smtpsPort, "imaps-port": *imapsPort, "directadmin-port": *daPort,
+			"https-alt-port": *httpsAltPort, "docker-port": *dockerPort, "grafana-port": *grafanaPort,
+			"prometheus-port": *promPort, "cpanel-port": *cpanelPort, "whm-port": *whmPort,
+			"webmail-port": *webmailPort, "postgres-port": *pgPort, "mysql-port": *mysqlPort,
+		} {
 			if err := validPort(p); err != nil {
 				fail("--%s: %v", label, err)
 			}
 		}
-		portFor := map[string]int{"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort, "smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort}
+		portFor := map[string]int{
+			"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort,
+			"smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort,
+			"https-alt": *httpsAltPort, "docker": *dockerPort, "grafana": *grafanaPort,
+			"prometheus": *promPort, "cpanel": *cpanelPort, "whm": *whmPort, "webmail": *webmailPort,
+			"postgres": *pgPort, "mysql": *mysqlPort,
+		}
 		for _, ty := range types {
 			sni := ""
 			if ty != "ssh" {

@@ -320,7 +320,8 @@ func safeAtoi(s string, defaultVal int) int {
 }
 
 // allMimics is the full camouflage arsenal, in the order the wizard offers it.
-var allMimics = []string{"ssh", "tls", "smtp", "imap", "smtps", "imaps", "directadmin"}
+// Shared with the CLI (mimicTypesAll) so the two never disagree on the set.
+var allMimics = mimicTypesAll
 
 // promptMimics shows a checkbox selection of camouflage protocols and returns the
 // chosen types, defaulting to ssh+tls. The first option ("all") selects the whole
@@ -339,7 +340,7 @@ func promptMimicsWithDefault(def []string) []string {
 		Message: "Select camouflage protocols (Space toggles, Enter confirms):",
 		Options: append([]string{allOpt}, allMimics...),
 		Default: def,
-		Help:    "tls=HTTPS:443, ssh=22, smtp=587, imap=143, smtps=465, imaps=993, directadmin=2222. Run several for a stronger, shifting signature.",
+		Help:    "ssh=22, tls=HTTPS:443, https-alt=8443, smtp=587, imap=143, smtps=465, imaps=993, directadmin=2222, docker=5000, grafana=3000, prometheus=9090, cpanel=2083, whm=2087, webmail=2096, postgres=5432, mysql=3306. Run several for a stronger, shifting signature.",
 	}, &sel)
 
 	chosen := map[string]bool{}
@@ -364,23 +365,10 @@ func promptMimicsWithDefault(def []string) []string {
 // mimicPort maps a mimic type to its conventional port; the SSH port is caller-set
 // so the operator can relocate it when outbound :22 is blocked.
 func mimicPort(ty string, sshPort int) int {
-	switch ty {
-	case "ssh":
+	if ty == "ssh" {
 		return sshPort
-	case "tls":
-		return 443
-	case "smtp":
-		return 587
-	case "imap":
-		return 143
-	case "smtps":
-		return 465
-	case "imaps":
-		return 993
-	case "directadmin":
-		return 2222
 	}
-	return 0
+	return conventionalPorts()[ty] // 0 for an unknown type
 }
 
 // containsStr reports whether s is in list.
