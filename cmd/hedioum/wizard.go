@@ -11,6 +11,7 @@ import (
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/persona"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 )
 
@@ -58,8 +59,34 @@ func setupForeignNode(cfg *config.AppConfig) {
 		Default: detectedIP,
 	}, &ip, survey.WithValidator(survey.Required))
 
-	// Which camouflages this node listens behind (checkbox; "all" = whole arsenal).
-	mimics := promptMimics()
+	// Choose a coherent server persona (SSH + 9 mimics) seeded from the token, or a
+	// custom mimic set. The token is generated now so it can seed the persona.
+	token := sysutil.GenerateSecureToken()
+	var personaChoice string
+	survey.AskOne(&survey.Select{
+		Message: "Server persona (shapes the whole on-wire footprint):",
+		Options: append([]string{"auto (recommended)"}, append(persona.Names(), "custom (choose mimics)")...),
+		Default: "auto (recommended)",
+		Help:    "auto = a coherent persona seeded from your token. cpanel/directadmin/devops force one. custom = pick individual mimics.",
+	}, &personaChoice)
+
+	var mimics []string
+	chosenPersona := ""
+	if strings.HasPrefix(personaChoice, "custom") {
+		mimics = promptMimics()
+	} else {
+		chosenPersona = strings.Fields(personaChoice)[0] // "auto"/"cpanel"/...
+		if chosenPersona == "auto" {
+			chosenPersona = persona.Auto(token)
+		}
+		var err error
+		if mimics, err = persona.Resolve(chosenPersona, token); err != nil {
+			color.Red("[x] persona %q: %v — falling back to a manual selection.", chosenPersona, err)
+			chosenPersona, mimics = "", promptMimics()
+		} else {
+			color.Green("[✓] Persona %q: %s", chosenPersona, strings.Join(mimics, ", "))
+		}
+	}
 
 	// SSH-specific prompts only matter when the SSH mimic is enabled.
 	listenPort := 22
@@ -103,7 +130,8 @@ func setupForeignNode(cfg *config.AppConfig) {
 	cfg.ForeignListenPort = listenPort
 	cfg.DecoyPort = decoyPort
 	cfg.Mimics = mimicList
-	cfg.AuthToken = sysutil.GenerateSecureToken()
+	cfg.Persona = chosenPersona
+	cfg.AuthToken = token
 
 	// IPv6 egress is opt-in (default IPv4-only to avoid leaking the v6 identity).
 	cfg.EgressIPMode = "ipv4"
@@ -143,14 +171,14 @@ func setupForeignNode(cfg *config.AppConfig) {
 		color.Yellow("  [!] Using a self-signed certificate. A domain is recommended when possible.")
 	}
 
-	// Camouflage persona shown to unauthorized probes / scanners.
-	persona := ""
+	// Web-decoy style shown to unauthorized probes on the plain web ports.
+	decoyStyle := ""
 	survey.AskOne(&survey.Select{
-		Message: "Decoy persona for unauthorized probes:",
+		Message: "Web-decoy style for unauthorized probes:",
 		Options: []string{"apache (Apache default page)", "directadmin (DirectAdmin hosting box)"},
 		Default: "apache (Apache default page)",
-	}, &persona)
-	if strings.HasPrefix(persona, "directadmin") {
+	}, &decoyStyle)
+	if strings.HasPrefix(decoyStyle, "directadmin") {
 		cfg.DecoyStyle = "directadmin"
 	} else {
 		cfg.DecoyStyle = "apache"
@@ -242,10 +270,34 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 	node.BandwidthLimitMbps = safeAtoi(answers.BandwidthLimit, 8)
 	node.BandwidthJitterMbps = safeAtoi(answers.BandwidthJitter, 2)
 
-	// Which mimics to reach this node over (checkbox; must match what the foreign
-	// node runs). Populating Endpoints is what enables the multi-mimic arsenal —
-	// without it the node falls back to a single synthesized SSH endpoint.
-	for _, ty := range promptMimics() {
+	// Which mimics to reach this node over — must match what the foreign runs. Since
+	// the persona is deterministic from the token, "auto" derives the exact set the
+	// foreign chose; or match a named persona, or pick manually.
+	var mimicTypes []string
+	hubPersonaChoice := ""
+	survey.AskOne(&survey.Select{
+		Message: "Match the foreign's mimic set:",
+		Options: append([]string{"auto (from token)"}, append(persona.Names(), "custom (choose mimics)")...),
+		Default: "auto (from token)",
+		Help:    "auto derives the foreign's persona from the shared token. Or force a named persona, or pick individual mimics.",
+	}, &hubPersonaChoice)
+	if strings.HasPrefix(hubPersonaChoice, "custom") {
+		mimicTypes = promptMimics()
+	} else {
+		name := strings.Fields(hubPersonaChoice)[0]
+		if name == "auto" {
+			name = persona.Auto(node.AuthToken)
+		}
+		if types, err := persona.Resolve(name, node.AuthToken); err == nil {
+			mimicTypes = types
+			color.Green("[✓] Persona %q → %d endpoints", name, len(types))
+		} else {
+			mimicTypes = promptMimics()
+		}
+	}
+	// Populating Endpoints is what enables the multi-mimic arsenal — without it the
+	// node falls back to a single synthesized SSH endpoint.
+	for _, ty := range mimicTypes {
 		node.Endpoints = append(node.Endpoints, config.Endpoint{
 			Target: net.JoinHostPort(node.TargetIP, strconv.Itoa(mimicPort(ty, node.TargetPort))),
 			Mimic:  ty,

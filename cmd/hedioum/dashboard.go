@@ -97,6 +97,11 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 			} else if cfg.Role == "foreign" {
 				// Display critical connection info for the foreign server
 				color.HiCyan("\n=== [ Egress Node Details ] ===")
+				personaLabel := cfg.Persona
+				if personaLabel == "" {
+					personaLabel = "custom"
+				}
+				fmt.Printf(" ├─ Persona     : %s (%d mimics)\n", personaLabel, len(cfg.Mimics))
 				fmt.Printf(" ├─ Listen Port : %d\n", cfg.ForeignListenPort)
 				fmt.Printf(" └─ Auth Token  : %s\n", color.HiYellowString(cfg.AuthToken))
 				color.HiBlack("    (Use this token when configuring your Iran Hub)")

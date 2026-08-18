@@ -41,6 +41,11 @@ type AppConfig struct {
 	// DirectAdmin hosting box — "webserver is functioning normally" on the web ports
 	// and the DirectAdmin panel on :2222).
 	DecoyStyle string `json:"decoy_style,omitempty"`
+	// Persona is the coherent server identity the foreign wears — "cpanel",
+	// "directadmin", or "devops" — which determines the mimic set (SSH + 9). Empty
+	// means a custom mimic set was chosen explicitly (via --mimics) rather than a
+	// persona. Recorded so edit/status can show it and re-resolve it.
+	Persona string `json:"persona,omitempty"`
 	// Mimics lists the camouflage listeners the foreign runs (SSH, TLS, ...). If
 	// empty, a single SSH listener is synthesized from ForeignListenPort/DecoyPort.
 	Mimics []MimicListener `json:"mimics,omitempty"`
