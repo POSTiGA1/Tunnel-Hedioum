@@ -10,6 +10,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/pairing"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/persona"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 )
@@ -99,6 +100,7 @@ func cmdSetupForeign(args []string) {
 	moveSSH := fs.Bool("move-ssh", false, "relocate OpenSSH to --decoy-port")
 	httpDecoyPort := fs.Int("http-decoy-port", 80, "plaintext web decoy port (0 to disable)")
 	token := fs.String("token", "", "auth token (generated if empty)")
+	publicIP := fs.String("public-ip", "", "public IP to embed in the pairing token (auto-detected if empty)")
 	_ = fs.Parse(args)
 
 	switch *decoyStyle {
@@ -269,7 +271,34 @@ func cmdSetupForeign(args []string) {
 	} else {
 		color.Green("[✓] Domain %s: a real Let's Encrypt cert will be obtained once DNS points here.", *domain)
 	}
-	fmt.Printf("Auth Token: %s\n", tok)
+	// Emit a self-contained v2 pairing token (exit IP + ports + persona + key) so the
+	// hub onboards by pasting one string — no --target-ip/--mimics to match by hand.
+	exitIP := *publicIP
+	if exitIP == "" {
+		if ip, err := sysutil.GetPublicIPv4(); err == nil {
+			exitIP = ip
+		}
+	}
+	if exitIP != "" {
+		eps := make(map[string]int, len(mimicList))
+		for _, m := range mimicList {
+			eps[m.Type] = m.Port
+		}
+		sni := *tlsServerName
+		if sni == "" {
+			sni = *domain
+		}
+		pt := pairing.Encode(pairing.Token{ExitIP: exitIP, AuthKey: tok, Persona: chosenPersona, SNI: sni, Endpoints: eps})
+		color.HiGreen("\n━━━ Hub onboarding ━━━")
+		color.HiGreen("Paste THIS pairing token into the hub — it already carries the exit IP, every")
+		color.HiGreen("port, and the persona, so the hub needs no --target-ip/--persona/--mimics:")
+		fmt.Println(pt)
+		color.HiBlack("(Raw auth key, for advanced/legacy setups only: %s)", tok)
+	} else {
+		color.Yellow("[!] Public IP not detected: on the hub use the raw token below with --target-ip,")
+		color.Yellow("    or re-run with --public-ip <ip> to emit a paste-only pairing token.")
+		fmt.Printf("Auth Token: %s\n", tok)
+	}
 	// Apply immediately: without a restart the daemon keeps its old config (old
 	// mimics AND old token), which silently breaks the link after re-provisioning.
 	restartDaemon()
@@ -318,12 +347,46 @@ func cmdAddNode(args []string) {
 	if err := validPort(*socksPort); err != nil {
 		fail("--socks-port: %v", err)
 	}
-	if err := validToken(*token); err != nil {
+	// A v2 pairing token is self-contained (IP + ports + persona + key); a v1 token is
+	// a bare hex secret used with --target-ip and --persona/--mimics.
+	pairTok, isV2, perr := pairing.Decode(*token)
+	if perr != nil {
+		fail("--token: %v", perr)
+	}
+	authKey := *token
+	if isV2 {
+		authKey = pairTok.AuthKey
+	}
+	if err := validToken(authKey); err != nil {
 		fail("--token: %v", err)
 	}
 
 	var endpoints []config.Endpoint
 	switch {
+	case isV2:
+		if *targetIP != "" || *mimics != "" || *personaFlag != "" {
+			color.Yellow("[!] v2 pairing token is self-contained; ignoring --target-ip/--mimics/--persona.")
+		}
+		for _, ty := range mimicTypesAll {
+			port, ok := pairTok.Endpoints[ty]
+			if !ok {
+				continue
+			}
+			sni := ""
+			if ty != "ssh" {
+				sni = pairTok.SNI
+			}
+			endpoints = append(endpoints, config.Endpoint{
+				Target:     net.JoinHostPort(pairTok.ExitIP, strconv.Itoa(port)),
+				Mimic:      ty,
+				ServerName: sni,
+			})
+		}
+		label := pairTok.Persona
+		if label == "" {
+			label = "custom"
+		}
+		color.Green("[✓] Pairing token: %s persona, %d endpoints @ %s.", label, len(endpoints), pairTok.ExitIP)
 	case *mimics != "" || *personaFlag != "":
 		if *targetIP == "" {
 			fail("--mimics/--persona requires --target-ip")
@@ -340,11 +403,11 @@ func cmdAddNode(args []string) {
 		} else {
 			name := *personaFlag
 			if name == "auto" {
-				name = persona.Auto(*token)
+				name = persona.Auto(authKey)
 			} else if !persona.Known(name) {
 				fail("--persona must be auto|%s", strings.Join(persona.Names(), "|"))
 			}
-			if types, err = persona.Resolve(name, *token); err != nil {
+			if types, err = persona.Resolve(name, authKey); err != nil {
 				fail("--persona: %v", err)
 			}
 			color.Green("[✓] Persona %q: dialing the foreign across %d endpoints.", name, len(types))
@@ -384,7 +447,7 @@ func cmdAddNode(args []string) {
 		}
 		endpoints = []config.Endpoint{{Target: *target, Mimic: "ssh"}}
 	default:
-		fail("provide --target-ip with --persona ... or --mimics ..., or --target HOST:PORT")
+		fail("provide a v2 pairing token, or --target-ip with --persona/--mimics, or --target HOST:PORT")
 	}
 
 	pMin, pMax, pBw, pJit := speedProfile(*profile)
@@ -415,7 +478,7 @@ func cmdAddNode(args []string) {
 	cfg.UpdateForeignNode(config.ForeignNode{
 		Alias:               *alias,
 		LocalSocksPort:      *socksPort,
-		AuthToken:           *token,
+		AuthToken:           authKey,
 		Endpoints:           endpoints,
 		MinConnections:      pMin,
 		MaxConnections:      pMax,
