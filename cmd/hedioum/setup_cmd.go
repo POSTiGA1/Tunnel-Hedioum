@@ -289,13 +289,16 @@ func cmdSetupForeign(args []string) {
 			sni = *domain
 		}
 		pt := pairing.Encode(pairing.Token{ExitIP: exitIP, AuthKey: tok, Persona: chosenPersona, SNI: sni, Endpoints: eps})
-		color.HiGreen("\n[✓] Pairing token (paste into the hub — carries IP, ports, persona & key):")
+		color.HiGreen("\n━━━ Hub onboarding ━━━")
+		color.HiGreen("Paste THIS pairing token into the hub — it already carries the exit IP, every")
+		color.HiGreen("port, and the persona, so the hub needs no --target-ip/--persona/--mimics:")
 		fmt.Println(pt)
+		color.HiBlack("(Raw auth key, for advanced/legacy setups only: %s)", tok)
 	} else {
 		color.Yellow("[!] Public IP not detected: on the hub use the raw token below with --target-ip,")
 		color.Yellow("    or re-run with --public-ip <ip> to emit a paste-only pairing token.")
+		fmt.Printf("Auth Token: %s\n", tok)
 	}
-	fmt.Printf("Auth Token: %s\n", tok)
 	// Apply immediately: without a restart the daemon keeps its old config (old
 	// mimics AND old token), which silently breaks the link after re-provisioning.
 	restartDaemon()

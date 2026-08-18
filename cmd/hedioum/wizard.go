@@ -238,7 +238,7 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 		},
 		{
 			Name:     "authtoken",
-			Prompt:   &survey.Input{Message: "Authentication Token (from egress server):"},
+			Prompt:   &survey.Input{Message: "Pairing token from the egress server (carries IP/ports/persona; a legacy auth token also works):"},
 			Validate: survey.Required,
 		},
 	}
@@ -304,10 +304,10 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 	if !fromToken {
 		hubPersonaChoice := ""
 		survey.AskOne(&survey.Select{
-			Message: "Match the foreign's mimic set:",
+			Message: "Match the foreign's mimic set (tip: paste the v2 pairing token instead to skip this):",
 			Options: append([]string{"auto (from token)"}, append(persona.Names(), "custom (choose mimics)")...),
 			Default: "auto (from token)",
-			Help:    "auto derives the foreign's persona from the shared token. Or force a named persona, or pick individual mimics.",
+			Help:    "auto matches an auto-configured foreign (same token → same persona). If the foreign FORCED a persona, choose that name here, or use the pairing token.",
 		}, &hubPersonaChoice)
 		if strings.HasPrefix(hubPersonaChoice, "custom") {
 			mimicTypes = promptMimics()
