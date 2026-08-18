@@ -23,7 +23,7 @@ import (
 // so v0.5 and v0.6 nodes interoperate): structured slog logging, non-interactive
 // CLI + self-install, configurable decoy/listen ports, buffered banner reads, and
 // a ghp.ci-free, signature-free-but-robust self-update.
-const AppVersion = "v0.8.0"
+const AppVersion = "v0.9.0"
 
 func main() {
 	// Management subcommands (a non-flag first argument): install, setup-*, etc.
@@ -185,9 +185,10 @@ func isTerminal(f *os.File) bool {
 // binary is launched with no config on a non-interactive stdin.
 func printSetupHint() {
 	color.HiWhite("\nConfigure non-interactively, then start the service:")
-	color.HiWhite("  Foreign: hedioum-tunnel setup-foreign --mimics all --move-ssh")
-	color.HiWhite("  Iran:    hedioum-tunnel setup-iran --alias NAME --target-ip IP --mimics all --socks-port N --token HEX")
+	color.HiWhite("  Foreign: hedioum-tunnel setup-foreign            (auto-picks a persona; prints a pairing token)")
+	color.HiWhite("  Iran:    hedioum-tunnel setup-iran --alias NAME --token <PAIRING_TOKEN> --socks-port N")
 	color.HiWhite("  Then:    systemctl start hedioum.service")
+	color.HiBlack("  (The pairing token carries the IP, ports and persona — no --target-ip/--mimics needed.)")
 	color.HiBlack("  (Or run 'hedioum-tunnel' on an interactive terminal for the guided wizard.)")
 }
 
