@@ -37,8 +37,9 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 				"5. Remove Existing Egress Node",
 				"6. Run Speedtest to a Node",
 				"7. Probe Endpoints (per-mimic reachability)",
-				"8. Check This Server's IP Reputation",
-				"9. Restart the Service (reset all pools)",
+				"8. Test Connection (full egress: exit IP, sites, DNS, TUN)",
+				"9. Check This Server's IP Reputation",
+				"10. Restart the Service (reset all pools)",
 			)
 		} else {
 			options = append(options,
@@ -146,6 +147,11 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 
 		case strings.Contains(action, "Probe Endpoints"):
 			runProbeMenu(cfg)
+
+		case strings.Contains(action, "Test Connection"):
+			if node, ok := pickNode(cfg, "Select node to test:"); ok {
+				testNodeConnection(node)
+			}
 
 		case strings.Contains(action, "IP Reputation"):
 			cmdCheckIP(nil)

@@ -361,6 +361,53 @@ func getNextFreeSocksPort(cfg *config.AppConfig) string {
 	return strconv.Itoa(startPort)
 }
 
+// nextFreeTun assigns this hub's next unused TUN interface name and /24, so multiple
+// foreign nodes each get a distinct interface + subnet (hedioum0/10.200.0.1/24,
+// hedioum1/10.200.1.1/24, ...) and never collide with each other OR with the hub's
+// existing LAN/interface subnets. The .1 host is the node's gateway IP. The range is
+// hub-local only (the foreign never sees it); it is still overridable at setup.
+func nextFreeTun(cfg *config.AppConfig) (name, addr string) {
+	used := map[int]bool{}
+	for _, n := range cfg.ForeignNodes {
+		var idx int
+		if _, err := fmt.Sscanf(n.TunName, "hedioum%d", &idx); err == nil {
+			used[idx] = true
+		}
+	}
+	// Avoid overlapping any subnet already present on this host.
+	var local []*net.IPNet
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+				local = append(local, ipnet)
+			}
+		}
+	}
+	conflicts := func(i int) bool {
+		gw := net.IPv4(10, 200, byte(i), 1)
+		for _, ln := range local {
+			if ln.Contains(gw) {
+				return true
+			}
+		}
+		return false
+	}
+	for idx := 0; idx < 250; idx++ {
+		if !used[idx] && !conflicts(idx) {
+			return fmt.Sprintf("hedioum%d", idx), fmt.Sprintf("10.200.%d.1/24", idx)
+		}
+	}
+	return "hedioum0", "10.200.0.1/24" // fallback (extremely unlikely to be reached)
+}
+
+// tunGatewayIP returns the bare gateway IP (10.200.N.1) from a TunAddr CIDR.
+func tunGatewayIP(tunAddr string) string {
+	if i := strings.IndexByte(tunAddr, '/'); i > 0 {
+		return tunAddr[:i]
+	}
+	return tunAddr
+}
+
 // validateHost accepts a non-empty IPv4/IPv6 literal or a plausible hostname.
 func validateHost(val interface{}) error {
 	s, _ := val.(string)

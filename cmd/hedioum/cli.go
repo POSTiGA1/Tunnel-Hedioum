@@ -39,6 +39,8 @@ func runSubcommand(name string, args []string) {
 		cmdSpeedtest(args)
 	case "probe":
 		cmdProbe(args)
+	case "test":
+		cmdTestConnection(args)
 	case "check-ip":
 		cmdCheckIP(args)
 	case "help", "-h", "--help":
