@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	mrand "math/rand/v2"
 	"net"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -71,12 +73,45 @@ func ProbeEndpoint(ep config.Endpoint, token string) (time.Duration, error) {
 }
 
 // endpointDialer spreads new physical pipes across a node's endpoints with random
-// per-node weights, so each server instance runs a different, shifting mix of
-// mimics (Chaos Mesh v2) — there is no fixed "10 SSH + 0 others" signature for DPI.
+// per-node weights (Chaos Mesh v2 — no fixed "10 SSH + 0 others" signature), and
+// tracks per-endpoint reachability so a censored entry port (e.g. an ISP that drops
+// outbound :22) is detected, skipped, and periodically retried. Each dial races across
+// candidate ports, so the tunnel still comes up when some ports are blocked.
 type endpointDialer struct {
 	node    config.ForeignNode
 	cfg     *yamux.Config
 	weights []float64
+
+	mu     sync.Mutex
+	health map[string]*epHealth // keyed by endpoint.Target
+}
+
+type epHealth struct {
+	fails         int
+	cooldownUntil time.Time
+}
+
+const (
+	dialMaxAttempts = 4                // candidate ports tried per dial (bounds a down-node stall)
+	epFailThreshold = 2                // consecutive fails before an endpoint is cooled down
+	epCooldownBase  = 60 * time.Second // first cooldown for a blocked endpoint (doubles per extra fail)
+	epCooldownMax   = 10 * time.Minute
+)
+
+// dialPriority orders fallback attempts by how likely a port is to be reachable from
+// a censored network: 443/8443 first, ssh last (it is the most commonly blocked).
+var dialPriority = map[string]int{
+	"tls": 0, "https-alt": 1,
+	"smtps": 2, "imaps": 2, "directadmin": 2, "cpanel": 2, "whm": 2, "webmail": 2,
+	"grafana": 2, "prometheus": 2, "docker": 2,
+	"smtp": 3, "imap": 3, "postgres": 4, "mysql": 4, "ssh": 5,
+}
+
+func dialRank(m string) int {
+	if r, ok := dialPriority[m]; ok {
+		return r
+	}
+	return 3
 }
 
 func newEndpointDialer(node config.ForeignNode) *endpointDialer {
@@ -84,38 +119,126 @@ func newEndpointDialer(node config.ForeignNode) *endpointDialer {
 	for i := range w {
 		w[i] = 0.3 + mrand.Float64() // per-node random bias
 	}
-	return &endpointDialer{node: node, cfg: hubYamuxConfig(), weights: w}
+	return &endpointDialer{node: node, cfg: hubYamuxConfig(), weights: w, health: map[string]*epHealth{}}
 }
 
-// pick chooses an endpoint by weighted random (drift emerges as the pool scales
-// pipes up and down over time).
-func (d *endpointDialer) pick() config.Endpoint {
-	if len(d.node.Endpoints) == 1 {
-		return d.node.Endpoints[0]
+// attemptOrder returns the endpoints to try for one dial, best-first: a weighted-
+// random primary pick among currently-reachable endpoints (for mimic diversity), then
+// the remaining reachable endpoints in innocuous-port-first order, then any
+// cooling-down endpoints as a last resort. Capped at dialMaxAttempts.
+func (d *endpointDialer) attemptOrder() []config.Endpoint {
+	eps := d.node.Endpoints
+	if len(eps) <= 1 {
+		return eps
 	}
-	total := 0.0
-	for _, w := range d.weights {
-		total += w
-	}
-	r := mrand.Float64() * total
-	for i, w := range d.weights {
-		if r -= w; r <= 0 {
-			return d.node.Endpoints[i]
+	now := time.Now()
+	d.mu.Lock()
+	var reachable, cooling []int
+	for i, ep := range eps {
+		if h := d.health[ep.Target]; h != nil && h.cooldownUntil.After(now) {
+			cooling = append(cooling, i)
+		} else {
+			reachable = append(reachable, i)
 		}
 	}
-	return d.node.Endpoints[len(d.node.Endpoints)-1]
+	d.mu.Unlock()
+
+	pool := reachable
+	if len(pool) == 0 { // everything cooled down — try anyway, the block may have lifted
+		pool, cooling = cooling, nil
+	}
+
+	primary := d.weightedPick(pool)
+	seen := map[int]bool{primary: true}
+	order := []int{primary}
+
+	rest := append([]int(nil), pool...)
+	sort.SliceStable(rest, func(a, b int) bool {
+		return dialRank(eps[rest[a]].Mimic) < dialRank(eps[rest[b]].Mimic)
+	})
+	for _, i := range rest {
+		if !seen[i] {
+			order = append(order, i)
+			seen[i] = true
+		}
+	}
+	order = append(order, cooling...)
+	if len(order) > dialMaxAttempts {
+		order = order[:dialMaxAttempts]
+	}
+	out := make([]config.Endpoint, len(order))
+	for i, idx := range order {
+		out[i] = eps[idx]
+	}
+	return out
 }
 
-func (d *endpointDialer) dial() (*yamux.Session, string, error) {
-	ep := d.pick()
-	session, err := DialEndpoint(ep, d.node.AuthToken, d.cfg)
-	if err != nil {
-		slog.Warn("pipe dial failed", "node", d.node.Alias, "mimic", ep.Mimic, "target", ep.Target, "err", err)
-		return nil, ep.Mimic, err
+// weightedPick returns a weighted-random index from the candidate indices.
+func (d *endpointDialer) weightedPick(cand []int) int {
+	if len(cand) == 1 {
+		return cand[0]
 	}
-	slog.Info("pipe established", "node", d.node.Alias, "mimic", ep.Mimic, "target", ep.Target)
-	go keepAlive(session)
-	return session, ep.Mimic, nil
+	total := 0.0
+	for _, i := range cand {
+		total += d.weights[i]
+	}
+	r := mrand.Float64() * total
+	for _, i := range cand {
+		if r -= d.weights[i]; r <= 0 {
+			return i
+		}
+	}
+	return cand[len(cand)-1]
+}
+
+func (d *endpointDialer) recordSuccess(target string) {
+	d.mu.Lock()
+	if h := d.health[target]; h != nil {
+		h.fails, h.cooldownUntil = 0, time.Time{}
+	}
+	d.mu.Unlock()
+}
+
+func (d *endpointDialer) recordFailure(target string) {
+	d.mu.Lock()
+	h := d.health[target]
+	if h == nil {
+		h = &epHealth{}
+		d.health[target] = h
+	}
+	h.fails++
+	if h.fails >= epFailThreshold {
+		back := epCooldownBase << uint(h.fails-epFailThreshold)
+		if back <= 0 || back > epCooldownMax {
+			back = epCooldownMax
+		}
+		h.cooldownUntil = time.Now().Add(back)
+	}
+	d.mu.Unlock()
+}
+
+// dial establishes one physical pipe, racing across candidate ports so a censored
+// entry port does not stop the tunnel from coming up. The first port that completes
+// the mimic handshake wins; failures cool the port down so it is skipped next time.
+func (d *endpointDialer) dial() (*yamux.Session, string, error) {
+	var lastErr error
+	for _, ep := range d.attemptOrder() {
+		session, err := DialEndpoint(ep, d.node.AuthToken, d.cfg)
+		if err != nil {
+			d.recordFailure(ep.Target)
+			slog.Warn("pipe dial failed", "node", d.node.Alias, "mimic", ep.Mimic, "target", ep.Target, "err", err)
+			lastErr = err
+			continue
+		}
+		d.recordSuccess(ep.Target)
+		slog.Info("pipe established", "node", d.node.Alias, "mimic", ep.Mimic, "target", ep.Target)
+		go keepAlive(session)
+		return session, ep.Mimic, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("node %q has no endpoints to dial", d.node.Alias)
+	}
+	return nil, "", lastErr
 }
 
 // keepAlive sends a randomized-interval Yamux ping to evade DPI periodicity checks.
