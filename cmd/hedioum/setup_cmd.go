@@ -10,6 +10,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/persona"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 )
 
@@ -88,7 +89,8 @@ func cmdSetupForeign(args []string) {
 	pgPort := fs.Int("postgres-port", 5432, "PostgreSQL (STARTTLS) mimic port")
 	mysqlPort := fs.Int("mysql-port", 3306, "MySQL/MariaDB (STARTTLS) mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI/CN (optional)")
-	mimics := fs.String("mimics", "ssh", "camouflage: ssh|tls|https-alt|smtp|imap|smtps|imaps|directadmin|docker|postgres|mysql|all or a comma list")
+	personaFlag := fs.String("persona", "auto", "server persona: auto|cpanel|directadmin|devops (picks a coherent SSH+9 mimic set)")
+	mimics := fs.String("mimics", "", "explicit camouflage set (overrides --persona): comma list or 'all'")
 	domain := fs.String("domain", "", "real domain for a Let's Encrypt cert (recommended; empty = self-signed)")
 	acmeEmail := fs.String("acme-email", "", "Let's Encrypt account email (optional)")
 	decoyStyle := fs.String("decoy-style", "apache", "camouflage persona: apache|directadmin")
@@ -120,15 +122,37 @@ func cmdSetupForeign(args []string) {
 			fail("--egress-bind-ip: %v", err)
 		}
 	}
-	types, err := expandMimics(*mimics)
-	if err != nil {
-		fail("--mimics: %v", err)
-	}
 	tok := *token
 	if tok == "" {
 		tok = sysutil.GenerateSecureToken()
 	} else if err := validToken(tok); err != nil {
 		fail("--token: %v", err)
+	}
+
+	// Choose the mimic set: an explicit --mimics wins (power user); otherwise resolve
+	// a coherent persona (SSH + 9), seeded from the token so the set is deterministic
+	// per server and spreads across personas fleet-wide.
+	var types []string
+	var chosenPersona string
+	if *mimics != "" {
+		var err error
+		if types, err = expandMimics(*mimics); err != nil {
+			fail("--mimics: %v", err)
+		}
+		if cerr := persona.CheckCoherence(types); cerr != nil {
+			color.Yellow("[!] %v (an explicit --mimics set — proceeding anyway).", cerr)
+		}
+	} else {
+		chosenPersona = *personaFlag
+		if chosenPersona == "auto" || chosenPersona == "" {
+			chosenPersona = persona.Auto(tok)
+		} else if !persona.Known(chosenPersona) {
+			fail("--persona must be auto|%s", strings.Join(persona.Names(), "|"))
+		}
+		var err error
+		if types, err = persona.Resolve(chosenPersona, tok); err != nil {
+			fail("--persona: %v", err)
+		}
 	}
 
 	var mimicList []config.MimicListener
@@ -228,10 +252,14 @@ func cmdSetupForeign(args []string) {
 		EgressIPMode:      *egressMode,
 		EgressBindIP:      *bindIP,
 		AuthToken:         tok,
+		Persona:           chosenPersona,
 		Mimics:            mimicList,
 	}
 	if err := config.SaveConfig(cfg); err != nil {
 		fail("failed to save config: %v", err)
+	}
+	if chosenPersona != "" {
+		color.Green("[✓] Persona: %s (SSH backbone + %d coherent mimics).", chosenPersona, len(types)-1)
 	}
 	color.Green("[✓] Foreign config written (mimics: %s, egress %s).", strings.Join(types, ","), *egressMode)
 	if *domain == "" {

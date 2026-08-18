@@ -9,6 +9,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/config"
+	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/persona"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/sysutil"
 )
 
@@ -169,7 +170,8 @@ func cmdEditForeign(args []string) {
 	}
 
 	fs := flag.NewFlagSet("edit-foreign", flag.ExitOnError)
-	mimics := fs.String("mimics", mimicTypesCSV(cfg.Mimics), "camouflage set (comma list or 'all')")
+	personaFlag := fs.String("persona", cfg.Persona, "server persona: auto|cpanel|directadmin|devops (re-resolves the mimic set)")
+	mimics := fs.String("mimics", mimicTypesCSV(cfg.Mimics), "explicit camouflage set (overrides --persona): comma list or 'all'")
 	sshPort := fs.Int("listen-port", ports["ssh"], "SSH mimic public port")
 	tlsPort := fs.Int("tls-port", ports["tls"], "TLS mimic public port")
 	smtpPort := fs.Int("smtp-port", ports["smtp"], "SMTP (STARTTLS) mimic public port")
@@ -188,6 +190,8 @@ func cmdEditForeign(args []string) {
 	token := fs.String("token", "", "set a specific new auth token (default: keep current)")
 	rotateToken := fs.Bool("rotate-token", false, "generate a fresh auth token")
 	_ = fs.Parse(args)
+	setFlags := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
 
 	switch *decoyStyle {
 	case "apache", "directadmin":
@@ -204,13 +208,49 @@ func cmdEditForeign(args []string) {
 			fail("--egress-bind-ip: %v", err)
 		}
 	}
-	types, err := expandMimics(*mimics)
+	newToken, tokenNote, err := resolveTokenEdit(cfg.AuthToken, *token, *rotateToken)
 	if err != nil {
-		fail("--mimics: %v", err)
+		fail("--token: %v", err)
 	}
+
+	// Decide the mimic set. An explicit --mimics wins (custom, clears the persona);
+	// else an explicit --persona re-resolves from the (possibly rotated) token; else
+	// keep the current persona (re-resolved, so it tracks port/token edits) or the
+	// current custom set.
+	var types []string
+	switch {
+	case setFlags["mimics"]:
+		if types, err = expandMimics(*mimics); err != nil {
+			fail("--mimics: %v", err)
+		}
+		cfg.Persona = ""
+		if cerr := persona.CheckCoherence(types); cerr != nil {
+			color.Yellow("[!] %v (an explicit --mimics set — proceeding anyway).", cerr)
+		}
+	case setFlags["persona"]:
+		name := *personaFlag
+		if name == "auto" || name == "" {
+			name = persona.Auto(newToken)
+		} else if !persona.Known(name) {
+			fail("--persona must be auto|%s", strings.Join(persona.Names(), "|"))
+		}
+		if types, err = persona.Resolve(name, newToken); err != nil {
+			fail("--persona: %v", err)
+		}
+		cfg.Persona = name
+	case cfg.Persona != "":
+		if types, err = persona.Resolve(cfg.Persona, newToken); err != nil {
+			fail("--persona: %v", err)
+		}
+	default:
+		if types, err = expandMimics(*mimics); err != nil {
+			fail("--mimics: %v", err)
+		}
+	}
+
 	portMap := map[string]int{"ssh": *sshPort, "tls": *tlsPort, "smtp": *smtpPort, "imap": *imapPort, "smtps": *smtpsPort, "imaps": *imapsPort, "directadmin": *daPort}
-	// New-arsenal mimics (https-alt/docker/postgres/mysql) keep their resolved port
-	// (conventional default or the value already pinned in config); no extra flags.
+	// New-arsenal mimics keep their resolved port (conventional default or the value
+	// already pinned in config); no extra flags.
 	for _, ty := range []string{"https-alt", "docker", "grafana", "prometheus", "cpanel", "whm", "webmail", "postgres", "mysql"} {
 		portMap[ty] = ports[ty]
 	}
@@ -218,11 +258,6 @@ func cmdEditForeign(args []string) {
 		if err := validPort(p); err != nil {
 			fail("--%s-port: %v", label, err)
 		}
-	}
-
-	newToken, tokenNote, err := resolveTokenEdit(cfg.AuthToken, *token, *rotateToken)
-	if err != nil {
-		fail("--token: %v", err)
 	}
 
 	cfg.Mimics = buildForeignMimicList(types, portMap, *decoyPort, *tlsServerName)
