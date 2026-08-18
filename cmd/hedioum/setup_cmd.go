@@ -284,7 +284,8 @@ func cmdAddNode(args []string) {
 	alias := fs.String("alias", "", "node alias")
 	targetIP := fs.String("target-ip", "", "foreign IP (with --mimics)")
 	target := fs.String("target", "", "single foreign HOST:PORT (legacy, SSH)")
-	mimics := fs.String("mimics", "", "endpoints: ssh|tls|all (needs --target-ip)")
+	personaFlag := fs.String("persona", "", "match the foreign's persona: auto|cpanel|directadmin|devops (derives the endpoint set from the token; needs --target-ip)")
+	mimics := fs.String("mimics", "", "explicit endpoint set (overrides --persona): comma list or 'all' (needs --target-ip)")
 	sshPort := fs.Int("ssh-port", 22, "foreign SSH mimic port")
 	tlsPort := fs.Int("tls-port", 443, "foreign TLS mimic port")
 	smtpPort := fs.Int("smtp-port", 587, "foreign SMTP (STARTTLS) mimic port")
@@ -323,13 +324,30 @@ func cmdAddNode(args []string) {
 
 	var endpoints []config.Endpoint
 	switch {
-	case *mimics != "":
+	case *mimics != "" || *personaFlag != "":
 		if *targetIP == "" {
-			fail("--mimics requires --target-ip")
+			fail("--mimics/--persona requires --target-ip")
 		}
-		types, err := expandMimics(*mimics)
-		if err != nil {
-			fail("--mimics: %v", err)
+		// The endpoint set comes from an explicit --mimics (power user) or, since the
+		// persona is deterministic from the token, from --persona resolved against the
+		// shared token — so the hub matches the foreign's persona without hand-listing.
+		var types []string
+		var err error
+		if *mimics != "" {
+			if types, err = expandMimics(*mimics); err != nil {
+				fail("--mimics: %v", err)
+			}
+		} else {
+			name := *personaFlag
+			if name == "auto" {
+				name = persona.Auto(*token)
+			} else if !persona.Known(name) {
+				fail("--persona must be auto|%s", strings.Join(persona.Names(), "|"))
+			}
+			if types, err = persona.Resolve(name, *token); err != nil {
+				fail("--persona: %v", err)
+			}
+			color.Green("[✓] Persona %q: dialing the foreign across %d endpoints.", name, len(types))
 		}
 		for label, p := range map[string]int{
 			"ssh-port": *sshPort, "tls-port": *tlsPort, "smtp-port": *smtpPort, "imap-port": *imapPort,
@@ -366,7 +384,7 @@ func cmdAddNode(args []string) {
 		}
 		endpoints = []config.Endpoint{{Target: *target, Mimic: "ssh"}}
 	default:
-		fail("provide --target-ip --mimics ... or --target HOST:PORT")
+		fail("provide --target-ip with --persona ... or --mimics ..., or --target HOST:PORT")
 	}
 
 	pMin, pMax, pBw, pJit := speedProfile(*profile)

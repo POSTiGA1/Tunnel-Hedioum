@@ -270,10 +270,34 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 	node.BandwidthLimitMbps = safeAtoi(answers.BandwidthLimit, 8)
 	node.BandwidthJitterMbps = safeAtoi(answers.BandwidthJitter, 2)
 
-	// Which mimics to reach this node over (checkbox; must match what the foreign
-	// node runs). Populating Endpoints is what enables the multi-mimic arsenal —
-	// without it the node falls back to a single synthesized SSH endpoint.
-	for _, ty := range promptMimics() {
+	// Which mimics to reach this node over — must match what the foreign runs. Since
+	// the persona is deterministic from the token, "auto" derives the exact set the
+	// foreign chose; or match a named persona, or pick manually.
+	var mimicTypes []string
+	hubPersonaChoice := ""
+	survey.AskOne(&survey.Select{
+		Message: "Match the foreign's mimic set:",
+		Options: append([]string{"auto (from token)"}, append(persona.Names(), "custom (choose mimics)")...),
+		Default: "auto (from token)",
+		Help:    "auto derives the foreign's persona from the shared token. Or force a named persona, or pick individual mimics.",
+	}, &hubPersonaChoice)
+	if strings.HasPrefix(hubPersonaChoice, "custom") {
+		mimicTypes = promptMimics()
+	} else {
+		name := strings.Fields(hubPersonaChoice)[0]
+		if name == "auto" {
+			name = persona.Auto(node.AuthToken)
+		}
+		if types, err := persona.Resolve(name, node.AuthToken); err == nil {
+			mimicTypes = types
+			color.Green("[✓] Persona %q → %d endpoints", name, len(types))
+		} else {
+			mimicTypes = promptMimics()
+		}
+	}
+	// Populating Endpoints is what enables the multi-mimic arsenal — without it the
+	// node falls back to a single synthesized SSH endpoint.
+	for _, ty := range mimicTypes {
 		node.Endpoints = append(node.Endpoints, config.Endpoint{
 			Target: net.JoinHostPort(node.TargetIP, strconv.Itoa(mimicPort(ty, node.TargetPort))),
 			Mimic:  ty,
