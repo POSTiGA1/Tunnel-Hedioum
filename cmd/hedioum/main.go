@@ -20,11 +20,12 @@ import (
 // AppVersion defines the current build version for the self-updater.
 // CRITICAL: This must match the GitHub Release Tag exactly (e.g., v0.6.0)
 //
-// v0.6.0 is a NON-breaking feature release (wire protocol unchanged from v0.5.0,
-// so v0.5 and v0.6 nodes interoperate): structured slog logging, non-interactive
-// CLI + self-install, configurable decoy/listen ports, buffered banner reads, and
-// a ghp.ci-free, signature-free-but-robust self-update.
-const AppVersion = "v0.9.0"
+// v0.10.0 adds opt-in TUN mode (per-node OS interface via a gVisor userspace
+// stack over that node's SOCKS), a leak-free :53 DNS forwarder, and a multi-arch
+// Docker image (verified running on RouterOS/MikroTik containers, TUN included).
+// The wire protocol is UNCHANGED since v0.8.0, and TUN is hub-side only (the
+// foreign is untouched), so v0.10 hubs interoperate with v0.9 foreigns.
+const AppVersion = "v0.10.0"
 
 func main() {
 	// Management subcommands (a non-flag first argument): install, setup-*, etc.
