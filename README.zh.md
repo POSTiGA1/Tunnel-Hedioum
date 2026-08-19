@@ -6,7 +6,7 @@
 
 🌐 **[🇬🇧 English](README.md)** · **[🇮🇷 فارسی](README.fa.md)** · **[🇷🇺 Русский](README.ru.md)** · **🇨🇳 中文**
 
-Hedioum 是一款高性能、企业级的连接多路复用隧道，用于**绕过严格的深度包检测（DPI）与网络审查（翻墙 / 科学上网）**，并在高负载下避免 TCP 雪崩。它把加密的 VLESS/Trojan 流量包裹进动态伸缩的连接池中，这些连接佩戴一个**由 16 种伪装组成的军火库**——**SSH、TLS/HTTPS、邮件（SMTP/IMAP/SMTPS/IMAPS）、数据库（PostgreSQL/MySQL），以及托管/运维面板（cPanel、WHM、Webmail、DirectAdmin、Docker Registry、Grafana、Prometheus）**——并组装成一致的服务器**人格（persona）**，运行在现代认证加密之上。它还提供可选的操作系统级 **TUN 接口**，并可**运行在 MikroTik/RouterOS 与 Docker** 中。
+Hedioum 是一款高性能、企业级的连接多路复用隧道，用于**绕过严格的深度包检测（DPI）与网络审查（翻墙 / 科学上网）**，并在高负载下避免 TCP 雪崩。它把加密的 VLESS/Trojan 流量包裹进动态伸缩的连接池中，这些连接佩戴一个**由 16 种伪装组成的军火库**——**SSH、TLS/HTTPS、邮件（SMTP/IMAP/SMTPS/IMAPS）、数据库（PostgreSQL/MySQL），以及托管/运维面板（cPanel、WHM、Webmail、DirectAdmin、Docker Registry、Grafana、Prometheus）**——并组装成一致的服务器**人格（persona）**，运行在现代认证加密之上。它还提供可选的操作系统级 **TUN 接口**与**透明网关模式**，并可**运行在 MikroTik/RouterOS 与 Docker** 中——无需改动任何设备即可把整段局域网经由伪装隧道路由出去。
 
 > 架构：客户端 → Xray 面板（境内）→ **Hedioum 中枢（境内）** → 伪装隧道 → **境外出口节点** → 自由互联网。
 > 出口节点生成令牌；先安装出口节点，再安装境内节点。
@@ -22,7 +22,8 @@ Hedioum 是一款高性能、企业级的连接多路复用隧道，用于**绕�
 - **完整 TCP + UDP：** 单个本地 SOCKS5 端口同时服务 TCP（CONNECT）与 UDP（ASSOCIATE），因此 QUIC/HTTP3、DNS、语音/视频通话可用。UDP 走独立子连接池，与 TCP 隔离；节点间从不出现裸 UDP——它被封装在伪装的 TCP 链路里。
 - **可选 IPv6：** 节点间链路与出口可用 IPv6（`egress_ip_mode`：`ipv4` 默认 / `ipv6` / `dual`），默认不泄露服务器的 IPv6 身份。
 - **可选 TUN 模式 + 无泄漏 DNS：** 除 SOCKS5 端口外，每个节点还可暴露一个操作系统级 **TUN 接口**（`--tun`），让隧道能当作普通网络接口使用；外加一个 **`:53` DNS 转发器**（`--dns`），通过隧道解析（无本地泄漏）。它是 per-node 的（各自的接口 + `/24`）、可选，且**永不成为主机默认路由**——因此中枢自身的出口与 SSH 保持直连。TUN 引擎（在节点 SOCKS 之上的 gVisor 用户态协议栈）不需要外部 `ip` 程序，因此在 `FROM scratch` 容器内也能工作。
-- **运行于 MikroTik / Docker：** 以极小的多架构（`amd64/arm64/armv7`）`FROM scratch` 镜像（~17 MB）发布于 `ghcr.io/hedioum/pool-tunnel`，**已在 RouterOS 容器中验证运行且 TUN 可用**——见分步 **[MikroTik 指南](docs/MIKROTIK.zh.md)**。
+- **透明网关模式（路由整个局域网）：** 通过 `--gateway`，一个枢纽——尤其是 **MikroTik/RouterOS** 上或任意 Linux 路由器上的单个容器——变成透明的 L3 网关：局域网设备仍以路由器为网关，你把想走隧道的流量**打标 + 路由**到容器（正是 WireGuard/L2TP 模式），整段局域网便经由伪装隧道出口——**无需改动任何设备、无需外部代理**。基于 TUN 引擎；用 netlink 路由（`iif` 规则 + `ip_forward`）并带 RouterOS 7.22 防护。**已在真实 RouterOS CHR 和普通 Linux 路由器上端到端验证**（局域网客户端出口 IP = 境外节点，TCP+UDP，无 DNS 泄漏，不锁死访问）。
+- **运行于 MikroTik / Docker：** 以极小的多架构（`amd64/arm64/armv7`）`FROM scratch` 镜像（~17 MB）发布于 `ghcr.io/hedioum/pool-tunnel`，**已在 RouterOS 容器中验证运行，TUN 与网关模式均可用**——见分步 **[MikroTik 指南](docs/MIKROTIK.zh.md)**。
 - **可插拔协议伪装——16 种军火库：** 一个节点同时监听多种伪装。**SSH**（逐字节镜像主机自身 `sshd` 的真实 SSH-2.0 banner）；**隐式 TLS** 于 **TLS/HTTPS**、**HTTPS-alt（:8443）**、**SMTPS/IMAPS（465/993）**、一个 **Docker Registry（:5000）**、**Grafana（:3000）**、**Prometheus（:9090）**，以及 **cPanel / WHM / Webmail** 面板（`:2083/2087/2096`，真实的 `cpsrvd` 服务器头与像素级还原的登录页）；**STARTTLS** 于 **SMTP/IMAP（587/143）**、**PostgreSQL（:5432）** 与 **MySQL（:3306）**（真实的协议序言——`SSLRequest`、MySQL v10 问候——在升级到 TLS 之前）；以及 **DirectAdmin** 面板（:2222）。中枢以**每台独特的浮动分布**在它们之间分散物理连接（Chaos Mesh v2）。未授权探测会被路由到与协议相符的诱饵——真实 `sshd`、真实面板登录页，或 `Server`/`ETag`/`Last-Modified` **每台唯一**的网页人格；**80 端口**也运行诱饵，让裸 IP 在信誉扫描器眼里像普通网站主机。
 - **一致的服务器人格（Persona）：** 节点可以佩戴一个**人格**而非随机伪装组合——一个真实管理员能认出的自洽身份：**`cpanel`**（TLS + cPanel/WHM/Webmail）、**`directadmin`**（TLS + DirectAdmin）或 **`devops`**（TLS + HTTPS-alt + Docker + Grafana + Prometheus）。每个人格是 **SSH + 9 个一致的伪装**，由节点令牌确定性地派生（因此中枢能从共享令牌推导出完全相同的集合），并有一致性规则确保不兼容的面板永不同时出现。用 `--persona cpanel|directadmin|devops` 选择，或 `--persona auto`。
 - **仅需粘贴的接入（v2 配对令牌）：** `setup-foreign` 打印一个自包含的**配对令牌**（base64url），已携带出口 IP、每个 伪装→端口 映射、人格与认证密钥——因此中枢只需粘贴一行即可接入：`setup-iran --token <PAIRING_TOKEN> --socks-port 40001`。无需手动 `--target-ip`/`--mimics`/`--persona`。
@@ -83,9 +84,9 @@ Hedioum 以极小的多架构（`amd64/arm64/armv7`）`FROM scratch` 镜像（~1
 通过 `docker exec hedioum hedioum-tunnel test --node FR` 运行任意子命令（speedtest、probe、
 edit-node……）；改配置后用 `docker restart hedioum` 生效。
 
-**在 MikroTik/RouterOS 上**，同一镜像运行于 RouterOS 容器中——且 TUN 可用。把 SOCKS 绑定到
-容器 veth 地址（`--socks-bind`），局域网客户端便可访问。从一台全新路由器开始的完整分步指南：
-**[docs/MIKROTIK.zh.md](docs/MIKROTIK.zh.md)**。
+**在 MikroTik/RouterOS 上**，同一镜像运行于 RouterOS 容器中——TUN 与**网关模式**均可用。开启
+`--gateway`，然后在路由器上只需把流量 `mark` 并 `route` 到容器的 veth IP，即可让**整段局域网**
+走隧道（无需改动任何设备）。从一台全新路由器开始的完整分步指南：**[docs/MIKROTIK.zh.md](docs/MIKROTIK.zh.md)**。
 
 ## 🛠 从源码构建
 
