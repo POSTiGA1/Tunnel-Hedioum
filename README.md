@@ -6,7 +6,7 @@
 
 🌐 **🇬🇧 English** · **[🇮🇷 فارسی](README.fa.md)** · **[🇷🇺 Русский](README.ru.md)** · **[🇨🇳 中文](README.zh.md)** · **[Latest release](https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest)**
 
-Hedioum Pool Tunnel is a high-performance, enterprise-grade connection multiplexer designed to bypass strict Deep Packet Inspection (DPI) and thwart TCP Meltdown under heavy load. It operates as a Custom SDN Overlay, wrapping encrypted VLESS/Trojan traffic into highly obfuscated, dynamically scaling connection pools that wear interchangeable disguises — **SSH, TLS/HTTPS, SMTP/IMAP, and a DirectAdmin control panel** — over a modern authenticated-encryption transport.
+Hedioum Pool Tunnel is a high-performance, enterprise-grade connection multiplexer designed to bypass strict Deep Packet Inspection (DPI) and thwart TCP Meltdown under heavy load. It operates as a Custom SDN Overlay, wrapping encrypted VLESS/Trojan traffic into highly obfuscated, dynamically scaling connection pools that wear a **16-mimic arsenal** of interchangeable disguises — **SSH, TLS/HTTPS, mail (SMTP/IMAP/SMTPS/IMAPS), databases (PostgreSQL/MySQL), and hosting/devops panels (cPanel, WHM, Webmail, DirectAdmin, Docker Registry, Grafana, Prometheus)** — assembled into coherent server **personas**, over a modern authenticated-encryption transport. It also exposes an optional OS-level **TUN interface** and runs **on MikroTik/RouterOS and in Docker**.
 
 ## 🌟 Key Features
 
@@ -19,7 +19,12 @@ Hedioum Pool Tunnel is a high-performance, enterprise-grade connection multiplex
 - **Protocol-Aware Connection Lifecycle:** After raw volume, the strongest real-world tunnel tell is *protocol × connection lifetime*. SSH is the trusted long-lived backbone (rotating on a randomized multi-hour schedule); every non-SSH mimic is auxiliary with a **randomized 5–60 min lifetime + 1–5 GB transfer budget**, then it drains and the pool churns to a fresh pipe with a new random mimic. Each server's timings are seeded from its secret token, so no two servers churn alike.
 - **Full TCP + UDP:** A single local SOCKS5 port serves both TCP (CONNECT) and UDP (ASSOCIATE), so QUIC/HTTP3, DNS, and voice/video calls work. UDP rides its own dedicated (still SSH-masked) connection sub-pool, isolated from TCP so a bulk download can't stall a call, with drop-on-congestion so a slow link never buffers unboundedly. UDP never touches the wire between the nodes — it is tunnelled over the masked TCP link.
 - **Optional IPv6:** The inter-node link and egress-to-internet can use IPv6 (`egress_ip_mode`: `ipv4` default / `ipv6` / `dual`), opt-in so the server's IPv6 identity is never leaked by default.
-- **Pluggable Protocol Mimicry (Arsenal):** A single node can listen behind several camouflages at once — **SSH** (real SSH-2.0 banner mirrored byte-for-byte from the host's own `sshd`), **TLS/HTTPS** (a real TLS handshake; a real Let's Encrypt cert with a domain, self-signed otherwise), **STARTTLS SMTP/IMAP** (587/143), **implicit-TLS SMTPS/IMAPS** (465/993), and a **DirectAdmin panel** on **:2222** (a faithful *Evolution* login). The hub spreads its physical pipes across these with a **per-install fluctuating distribution** (Chaos Mesh v2), so two servers running the same build present different, shifting on-wire signatures. Every mimic routes unauthorized probes to a protocol-appropriate decoy — the real `sshd`, the DirectAdmin login, or a web persona (**Apache2 Ubuntu default page** or a **DirectAdmin hosting box**, selectable via `--decoy-style`) whose `Server`/`ETag`/`Last-Modified` are **per-install unique** (seeded from the token, no fleet-wide signature). A plaintext decoy runs on **`:80`** (redirecting to HTTPS when a domain is set) so even the bare IP looks like an ordinary web host to reputation scanners. See **[docs/MIMICS.md](docs/MIMICS.md)**.
+- **Opt-in TUN mode + leak-free DNS:** Besides the SOCKS5 port, each node can expose an OS-level **TUN interface** (`--tun`) so the tunnel is usable as a plain network interface, plus a **`:53` DNS forwarder** (`--dns`) that resolves through the tunnel (no local leak). It is per-node (own interface + `/24`), opt-in, and **never becomes the host default route** — so the hub's own egress and SSH stay direct. The TUN engine (a gVisor userspace stack over the node's SOCKS) needs no external `ip` binary, so it works inside a `FROM scratch` container.
+- **Runs on MikroTik / in Docker:** ships as a tiny multi-arch (`amd64/arm64/armv7`) `FROM scratch` image (~17 MB) at `ghcr.io/hedioum/pool-tunnel`, **verified running inside a RouterOS container with TUN working** — see the step-by-step **[MikroTik guide](docs/MIKROTIK.md)**.
+- **Pluggable Protocol Mimicry — 16-mimic arsenal:** A single node listens behind many camouflages at once. **SSH** (real SSH-2.0 banner mirrored byte-for-byte from the host's own `sshd`); **implicit-TLS** on **TLS/HTTPS**, **HTTPS-alt (:8443)**, **SMTPS/IMAPS (465/993)**, a **Docker Registry (:5000)**, **Grafana (:3000)**, **Prometheus (:9090)**, and the **cPanel / WHM / Webmail** panels (`:2083/2087/2096`, real `cpsrvd` server header and pixel-faithful login pages); **STARTTLS** on **SMTP/IMAP (587/143)**, **PostgreSQL (:5432)** and **MySQL (:3306)** (genuine protocol prologues — `SSLRequest`, a MySQL v10 greeting — before the TLS upgrade); and a **DirectAdmin** panel (`:2222`). The hub spreads its physical pipes across them with a **per-install fluctuating distribution** (Chaos Mesh v2), so two servers running the same build present different, shifting on-wire signatures. Every mimic routes unauthorized probes to a protocol-appropriate decoy — the real `sshd`, a real panel login, or a web persona whose `Server`/`ETag`/`Last-Modified` are **per-install unique** (seeded from the token, no fleet-wide signature). A plaintext decoy on **`:80`** makes even the bare IP look like an ordinary web host to reputation scanners. See **[docs/MIMICS.md](docs/MIMICS.md)**.
+- **Coherent Server Personas:** Instead of a random mimic mix, a node can wear a **persona** — a self-consistent identity that real admins would recognize: **`cpanel`** (TLS + cPanel/WHM/Webmail), **`directadmin`** (TLS + DirectAdmin), or **`devops`** (TLS + HTTPS-alt + Docker + Grafana + Prometheus). Each persona is **SSH + 9 coherent mimics**, seeded deterministically from the node's token (so the hub can re-derive the exact same set from the shared token), with a coherence rule so incompatible panels never co-appear. Pick one with `--persona cpanel|directadmin|devops`, or `--persona auto`.
+- **Paste-only onboarding (v2 pairing token):** `setup-foreign` prints a single self-contained **pairing token** (base64url) that already carries the exit IP, every mimic→port mapping, the persona and the auth key — so the hub is onboarded by pasting one string: `setup-iran --token <PAIRING_TOKEN> --socks-port 40001`. No `--target-ip`/`--mimics`/`--persona` to match by hand.
+- **Multi-port connect-race:** the hub dials a node across all its mimic ports with a weighted, innocuous-first race and per-endpoint reachability memory (cooldown/backoff), so if one port (e.g. `:22`) is blocked or throttled on your path, the tunnel still comes up over the others and recovers automatically.
 - **No DNS Leak by Design:** the SOCKS5 ingress forwards the destination **domain** (never a locally-resolved IP) through the tunnel, so DNS is resolved on the **foreign** node — configure your client for remote DNS (`domainStrategy: AsIs`) and the Iran box emits no DNS query for tunneled destinations. See the verification steps in [docs/MIMICS.md](docs/MIMICS.md).
 - **Channel-Bound Token Auth (no double crypto):** The TLS mimic authenticates the peer with an HMAC bound to the server's live certificate fingerprint — proving knowledge of the token *without ever sending it* and defeating MITM — while keeping a **single** crypto layer (the TLS session itself) for uniform, high-throughput performance. The client uses **uTLS** (a real Chrome ClientHello) to defeat JA3 fingerprinting.
 - **Throughput Engineering:** BBR congestion control + `fq` qdisc are enabled on install, Yamux stream windows are widened to 16 MB for high bandwidth-delay-product links, and a built-in `speedtest` command measures real end-to-end egress throughput (un-shaped) per endpoint.
@@ -51,15 +56,17 @@ Copy the matching binary (`hedioum-tunnel` / `hedioum-tunnel-arm64`) to the serv
 ### Non-interactive (automation)
 
     hedioum-tunnel install
-    hedioum-tunnel setup-foreign --mimics all --move-ssh --domain vpn.example.com --decoy-style directadmin   # foreign; prints the token
-    hedioum-tunnel setup-iran   --alias DE-01 --target-ip <IP> --mimics all --socks-port 40001 --token <hex>
+    hedioum-tunnel setup-foreign --persona auto --move-ssh --domain vpn.example.com   # foreign; prints a pairing token
+    hedioum-tunnel setup-iran   --alias DE-01 --token <PAIRING_TOKEN> --socks-port 40001   # paste the token; add --tun --dns to expose a TUN interface
     systemctl start hedioum.service
 
-`--mimics all` enables the whole arsenal (`ssh,tls,smtp,imap,smtps,imaps,directadmin`);
-pass a comma list to pick a subset. `--domain` is optional (a real Let's Encrypt cert
-once DNS points at the node; self-signed otherwise) and `--decoy-style` is
-`apache` (default) or `directadmin`. Updates are rollback-safe (`hedioum-tunnel
-update`, or `update --file <path>` when GitHub is blocked).
+`--persona auto|cpanel|directadmin|devops` picks a coherent identity (SSH + 9 mimics);
+`--mimics all` (or a comma list) still works for an explicit set. `setup-foreign` prints a
+self-contained **pairing token** — paste it into `setup-iran` and the exit IP, ports and
+persona are configured for you (no `--target-ip`/`--mimics` needed). `--domain` is optional
+(a real Let's Encrypt cert once DNS points at the node; self-signed otherwise). Add `--tun`
+(and `--dns`) on the hub to expose a TUN interface + a leak-free `:53` resolver. Updates are
+rollback-safe (`hedioum-tunnel update`, or `update --file <path>` when GitHub is blocked).
 
 **Editing a node in place** (only the flags you pass change; the token is kept unless
 `--token`/`--rotate-token`):
@@ -86,6 +93,26 @@ To manage servers, view live connection status, or perform lifecycle operations,
 - Run a **Speedtest** or **Probe** endpoints (per-mimic reachability) straight from the menu.
 - Perform a safe Self-Update (fetches latest GitHub release).
 - Completely Uninstall and purge the daemon.
+
+## 🐳 Docker & MikroTik
+
+Hedioum ships as a tiny multi-arch (`amd64/arm64/armv7`) `FROM scratch` image (~17 MB) at
+`ghcr.io/hedioum/pool-tunnel`. Run the hub in a container:
+
+    docker run -d --name hedioum --restart unless-stopped \
+      --cap-add NET_ADMIN --device /dev/net/tun \
+      -v /etc/hedioum:/etc/hedioum ghcr.io/hedioum/pool-tunnel:latest
+
+(SOCKS-only needs neither the cap nor the device.) Write the config first with a one-off
+run, e.g. `docker run --rm -v /etc/hedioum:/etc/hedioum ghcr.io/hedioum/pool-tunnel:latest
+setup-iran --alias FR --token <PAIRING_TOKEN> --socks-port 40001 --tun --dns`. The image has
+no shell, but you still run any subcommand via `docker exec hedioum hedioum-tunnel test
+--node FR` (speedtest, probe, edit-node, …); after a config edit, `docker restart hedioum`
+to apply.
+
+**On MikroTik/RouterOS** the same image runs inside a RouterOS container — with TUN working.
+Bind SOCKS to the container's veth IP (`--socks-bind`) so LAN clients can reach it. Full
+step-by-step from a bare router: **[docs/MIKROTIK.md](docs/MIKROTIK.md)**.
 
 ## 🛠 Building from Source
 
