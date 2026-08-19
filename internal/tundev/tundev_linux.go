@@ -34,6 +34,7 @@ type Instance struct {
 	stack *stack.Stack
 	tnl   *tunnel.Tunnel
 	dns   *dnsForwarder
+	gw    *gatewayState
 }
 
 // Name returns the interface name.
@@ -108,6 +109,16 @@ func Start(n Node) (*Instance, error) {
 		}
 	}
 
+	if n.Gateway {
+		gs, err := enableGateway(n.Name, n.GatewayIface, n.GatewayLAN)
+		if err != nil {
+			// Non-fatal: the TUN itself is up; gateway forwarding just isn't wired.
+			slog.Warn("gateway mode not enabled (TUN still up)", "iface", n.Name, "err", err)
+		} else {
+			in.gw = gs
+		}
+	}
+
 	return in, nil
 }
 
@@ -115,6 +126,9 @@ func Start(n Node) (*Instance, error) {
 func (in *Instance) Close() error {
 	if in == nil {
 		return nil
+	}
+	if in.gw != nil {
+		in.gw.disable()
 	}
 	if in.dns != nil {
 		in.dns.Close()

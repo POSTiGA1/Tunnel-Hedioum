@@ -7,6 +7,7 @@ require (
 	github.com/fatih/color v1.19.0
 	github.com/hashicorp/yamux v0.1.2
 	github.com/refraction-networking/utls v1.8.2
+	github.com/vishvananda/netlink v1.3.1-0.20250303224720-0e7078ed04c8
 	github.com/xjasonlyu/tun2socks/v2 v2.7.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.56.0
@@ -25,6 +26,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect
+	github.com/vishvananda/netns v0.0.5 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect

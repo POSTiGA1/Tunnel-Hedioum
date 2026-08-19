@@ -31,4 +31,11 @@ type Node struct {
 	EnableDNS bool
 	// MTU overrides the interface MTU; 0 uses the default (1500).
 	MTU uint32
+	// Gateway turns this node into a transparent L3 gateway: transit traffic that
+	// arrives on GatewayIface is policy-routed into the TUN (and so out the tunnel).
+	Gateway bool
+	// GatewayIface is the LAN-facing interface to match (iif); empty = auto-detect.
+	GatewayIface string
+	// GatewayLAN optionally scopes forwarding to these source subnets (defense-in-depth).
+	GatewayLAN []string
 }

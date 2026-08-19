@@ -336,17 +336,20 @@ func cmdEditNode(args []string) {
 	tunName := fs.String("tun-name", node.TunName, "TUN interface name (default: keep/auto)")
 	tunAddr := fs.String("tun-addr", node.TunAddr, "TUN gateway CIDR (default: keep/auto)")
 	dns := fs.Bool("dns", node.DNSEnabled, "run a :53 DNS forwarder on the TUN gateway IP (requires --tun)")
+	gateway := fs.Bool("gateway", node.GatewayEnabled, "transparent L3 gateway: forward transit traffic on the LAN iface into the tunnel (implies --tun)")
+	gatewayIface := fs.String("gateway-iface", node.GatewayIface, "LAN-facing interface to forward from (default: auto)")
+	gatewayLAN := fs.String("gateway-lan", strings.Join(node.GatewayLAN, ","), "comma-list of LAN subnets to scope forwarding (default: all transit)")
 	_ = fs.Parse(args)
 
 	if *targetIP == "" {
 		fail("--target-ip must not be empty")
 	}
-	if *dns && !*tun {
+	if *dns && !*tun && !*gateway {
 		fail("--dns requires --tun")
 	}
 	// Resolve TUN settings, auto-assigning a free interface/subnet when enabling
-	// without an explicit one; disabling clears the fields.
-	tunEnabled := *tun
+	// without an explicit one; disabling clears the fields. Gateway implies TUN.
+	tunEnabled := *tun || *gateway
 	tName, tAddr := *tunName, *tunAddr
 	if tunEnabled {
 		if tName == "" || tAddr == "" {
@@ -363,6 +366,18 @@ func cmdEditNode(args []string) {
 		}
 	} else {
 		tName, tAddr = "", ""
+	}
+	var gatewayLANs []string
+	if *gatewayLAN != "" {
+		for _, s := range strings.Split(*gatewayLAN, ",") {
+			if s = strings.TrimSpace(s); s == "" {
+				continue
+			}
+			if _, _, err := net.ParseCIDR(s); err != nil {
+				fail("--gateway-lan: invalid subnet %q: %v", s, err)
+			}
+			gatewayLANs = append(gatewayLANs, s)
+		}
 	}
 	types, err := expandMimics(*mimics)
 	if err != nil {
@@ -394,6 +409,9 @@ func cmdEditNode(args []string) {
 		TunName:             tName,
 		TunAddr:             tAddr,
 		DNSEnabled:          *dns,
+		GatewayEnabled:      *gateway,
+		GatewayIface:        *gatewayIface,
+		GatewayLAN:          gatewayLANs,
 		MinConnections:      *minC,
 		MaxConnections:      *maxC,
 		BandwidthLimitMbps:  *bw,

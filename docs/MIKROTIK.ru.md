@@ -160,7 +160,7 @@ RouterOS напишет `turn off power in N to activate changes`. **Выклю�
 Вы должны увидеть строки вроде:
 
 ```
-INFO hedioum daemon starting version=v0.10.1 role=iran
+INFO hedioum daemon starting version=v0.11.0 role=iran
 INFO SOCKS5 ingress active node=FR addr=172.20.0.2:40001
 INFO TUN egress active node=FR iface=hedioum0 addr=10.200.0.1/24 dns=true
 INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
@@ -175,9 +175,7 @@ INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
 - **SOCKS5:** направьте клиентов на **`172.20.0.2:40001`** (адрес, заданный в `--socks-bind`).
   Любое приложение с поддержкой SOCKS5 или outbound Xray/sing-box может им пользоваться. DNS
   разрешается удалённо (без утечек).
-- **Маршрутизация всей LAN:** запустите контейнер прозрачного прокси (Xray/sing-box в режиме
-  `tproxy`), который использует этот SOCKS, либо задайте прокси на отдельных устройствах.
-  (Продвинуто; за рамками руководства.)
+- **Маршрутизация всей LAN:** включите **режим шлюза** и направьте LAN на контейнер через mark+route — без внешнего прокси. См. раздел 9.
 - **TUN + DNS (опционально):** контейнер также предоставляет `hedioum0` (10.200.0.1/24) и
   форвардер `:53` **внутри** контейнера. Они полезнее всего, когда контейнер прозрачного
   прокси разделяет сеть контейнера; для простого SOCKS можно опустить `--tun --dns`.
@@ -212,81 +210,66 @@ INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
 
 ---
 
-## 9. Продвинуто — маршрутизация всей LAN через туннель
+## 9. Маршрутизация всей LAN через туннель (режим шлюза)
 
-RouterOS **сам по себе не умеет маршрутизировать обычный IP-трафик через SOCKS-прокси**,
-поэтому чтобы пустить всю LAN через туннель, нужен небольшой **помощник — прозрачный прокси**,
-который использует SOCKS Hedioum и превращает его в маршрутизируемый шлюз. Проверенная и
-поддерживаемая поверхность Hedioum — это **SOCKS5-эндпоинт** (`172.20.0.2:40001`); слой шлюза
-ниже — стандартный внешний паттерн (sing-box/Xray), который вы адаптируете, и он **не**
-проверяется CI этого проекта.
+**Режим шлюза** превращает контейнер в прозрачный L3-шлюз — точно как WireGuard/L2TP-интерфейс
+выхода. Вы **не меняете шлюз ни на одном устройстве**: маршрутизатор остаётся их шлюзом, вы
+**маркируете** нужный трафик и **маршрутизируете** его на veth-IP контейнера, а контейнер
+отправляет его в туннель. Ни второго контейнера, ни sing-box. (Весь путь проверен от начала до
+конца на настоящем RouterOS CHR и на обычном Linux-маршрутизаторе.)
 
-### A. Несколько устройств / приложений (без доп. контейнера)
+### A. Несколько устройств / приложений (без шлюза)
 
-Направьте любой SOCKS5-совместимый клиент на `172.20.0.2:40001`: настройка прокси в браузере,
-per-app прокси на телефоне или клиент Xray/sing-box в LAN, использующий его как outbound. DNS
-уже разрешается удалённо (без утечек). Предпочтительно, если не нужно маршрутизировать *всё*.
+Направьте любой SOCKS5-клиент на `--socks-bind` контейнера (`172.20.0.2:40001`). DNS уже
+разрешается удалённо (без утечек). Используйте это, если не нужно маршрутизировать *всё*.
 
-### B. Вся LAN (контейнер-помощник sing-box)
+### B. Вся LAN (нативный шлюз — рекомендуется)
 
-Запустите второй небольшой контейнер (**sing-box**) на **том же мосту**. Он принимает трафик
-LAN на TUN и выпускает его через SOCKS Hedioum; затем RouterOS отправляет интернет-трафик LAN
-к нему **политикой маршрутизации**, так что собственный маршрут по умолчанию роутера и доступ к
-управлению остаются нетронутыми (без блокировки доступа).
+**1) Включите режим шлюза** при создании конфига (шаг 4) — добавьте `--gateway` в одноразовый
+`setup-iran` или задайте `"gateway_enabled": true` в `hedioum.json`. После изменения конфига
+перезапустите контейнер.
 
-**1) Конфиг sing-box** (`singbox-cfg/config.json`, монтируется в помощник):
-
-```json
-{
-  "log": { "level": "warn" },
-  "dns": { "servers": [ { "tag": "remote", "address": "1.1.1.1", "detour": "hedioum" } ] },
-  "inbounds": [ {
-    "type": "tun", "interface_name": "sb0", "inet4_address": "172.31.0.1/30",
-    "auto_route": true, "strict_route": false, "stack": "system"
-  } ],
-  "outbounds": [ {
-    "type": "socks", "tag": "hedioum",
-    "server": "172.20.0.2", "server_port": 40001, "version": "5"
-  } ]
-}
-```
-
-**2) Добавьте контейнер-помощник** (свой veth-адрес `172.20.0.3` на том же мосту):
+**2) Направьте трафик LAN на контейнер** политикой маршрутизации — собственный маршрут по
+умолчанию роутера и доступ к управлению не трогаются. Замените `192.168.88.0/24` на вашу подсеть
+LAN (или ваш существующий address-list/mark «в зарубеж»):
 
 ```rsc
-/interface/veth/add name=veth-sb address=172.20.0.3/24 gateway=172.20.0.1
-/interface/bridge/port/add bridge=cbr interface=veth-sb
-/container/mounts/add name=sbcfg src=singbox-cfg dst=/etc/sing-box
-/container/add remote-image=ghcr.io/sagernet/sing-box:latest interface=veth-sb mounts=sbcfg \
-    cmd="run -c /etc/sing-box/config.json" root-dir=singbox logging=yes start-on-boot=yes
-/container/start [find where root-dir=singbox]
+/routing/table/add name=via-hedioum fib
+# ваш домашний/зарубежный split остаётся — локальное/домашнее обходите ДО этой метки
+/ip/firewall/mangle add chain=prerouting src-address=192.168.88.0/24 dst-address-type=!local \
+    action=mark-routing new-routing-mark=via-hedioum passthrough=no
+/ip/route add dst-address=0.0.0.0/0 gateway=172.20.0.2 routing-table=via-hedioum check-gateway=ping
 ```
 
-(Положите `config.json` в `singbox-cfg/` так же, как конфиг Hedioum — через `/tool/fetch`.
-Контейнеру sing-box нужны те же `NET_ADMIN` + `/dev/net/tun`, что и Hedioum — RouterOS их даёт.)
+`check-gateway=ping` даёт WireGuard-подобный failover (маршрут падает, если контейнер умер —
+добавьте резервный маршрут с меньшей distance для отката на прямой путь или второй выход).
 
-**3) Направьте LAN к помощнику политикой маршрутизации** — замените `192.168.88.0/24` на вашу
-подсеть LAN. Это отводит только пересылаемый интернет-трафик LAN; собственный маршрут по
-умолчанию роутера не трогается:
+**3) Две ловушки RouterOS, которые ОБЯЗАТЕЛЬНО учесть** (из реальных развёртываний):
 
 ```rsc
-/routing/table/add name=to-tunnel fib
-/ip/firewall/mangle/add chain=prerouting src-address=192.168.88.0/24 \
-    dst-address-type=!local action=mark-routing new-routing-mark=to-tunnel passthrough=no
-/ip/route/add dst-address=0.0.0.0/0 gateway=172.20.0.3 routing-table=to-tunnel
+# a) FastTrack обходит mangle + routing-marks → исключите туннелируемых клиентов, иначе маршрутизация молча не применится:
+/ip/firewall/filter add chain=forward action=accept src-address=192.168.88.0/24 \
+    place-before=[find where action=fasttrack-connection]
+# b) Защита от петли: не маркируйте СОБСТВЕННЫЙ трафик контейнера к зарубежному узлу:
+/ip/firewall/mangle add chain=prerouting src-address=172.20.0.2 action=accept place-before=0
+# рекомендуется: клампинг MSS, чтобы крупные TCP-потоки не проваливались:
+/ip/firewall/mangle add chain=forward protocol=tcp tcp-flags=syn action=change-mss \
+    new-mss=1280 tcp-mss=1281-65535
 ```
 
-**4) DNS (без утечек):** выдайте клиентам LAN резолвер, идущий через туннель — либо пусть DNS
-обслуживает sing-box (блок `dns` выше разрешает через outbound `hedioum`) и объявите помощник
-как DNS-сервер, либо запустите Hedioum с `--dns` и так же маршрутизируйте `:53`. Проверьте с
-клиента LAN: ваш публичный IP должен быть зарубежным, а тест на DNS-утечку — без локального резолвера.
+**4) DNS (без утечек):** маркируйте DNS клиентов для зарубежных имён тоже в туннель (контейнер
+разрешит на зарубежном узле), а домашний/`.ir` DNS держите на локальном резолвере — или запустите
+контейнер с `--dns` и так же маршрутизируйте `:53`. Проверьте с клиента LAN: ваш публичный IP
+должен быть зарубежным, тест на DNS-утечку — без локального резолвера.
 
-> **Примечания.** Контейнеру-шлюзу нужен IP forwarding, чтобы пересылаемый трафик достигал его
-> TUN; `auto_route` sing-box настраивает маршрутизацию внутри контейнера, но сверьтесь с
-> документацией sing-box вашей версии. Если туннель нужен лишь части клиентов, ограничьте
-> правило mangle их адресами, а не всей подсетью.
-
----
+> **Несколько выходов** (диапазон A → узел X, диапазон B → узел Y): запустите **по одному
+> контейнеру Hedioum на выход** (каждый со своим veth-IP) и направляйте разные routing-mark на
+> разные IP контейнеров — тот же паттерн параллельных таблиц, что и для WireGuard.
+>
+> **На обычном Docker / Linux-маршрутизаторе** (не MikroTik): то же работает с `docker run
+> --network host --cap-add NET_ADMIN --device /dev/net/tun --sysctl net.ipv4.ip_forward=1` и
+> `--gateway-iface <ваш-LAN-nic>`; затем направьте LAN политикой на этот хост. (Контейнеры
+> RouterOS дают эти права и форвардинг сами.)
 
 ## 10. Устранение неполадок
 

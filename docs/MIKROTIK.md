@@ -163,7 +163,7 @@ Start it:
 You should see lines like:
 
 ```
-INFO hedioum daemon starting version=v0.10.1 role=iran
+INFO hedioum daemon starting version=v0.11.0 role=iran
 INFO SOCKS5 ingress active node=FR addr=172.20.0.2:40001
 INFO TUN egress active node=FR iface=hedioum0 addr=10.200.0.1/24 dns=true
 INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
@@ -178,9 +178,7 @@ INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
 - **SOCKS5:** point clients at **`172.20.0.2:40001`** (the address you set with
   `--socks-bind`). Any SOCKS5-aware app, or an Xray/sing-box outbound, can use it. DNS is
   resolved remotely (no leak).
-- **Whole-LAN routing:** run a transparent-proxy container (Xray/sing-box in `tproxy` mode)
-  that consumes this SOCKS, or set the proxy on individual devices. (Advanced; beyond this
-  guide.)
+- **Whole-LAN routing:** turn on **gateway mode** and mark+route the LAN to the container — no extra proxy needed. See section 9.
 - **TUN + DNS (optional):** the container also exposes `hedioum0` (10.200.0.1/24) and a
   `:53` forwarder **inside** the container. These are most useful when a transparent-proxy
   container shares the container's network; for plain SOCKS use you can skip `--tun --dns`.
@@ -216,80 +214,70 @@ and `docker restart <name>` after a config edit.)*
 
 ---
 
-## 9. Advanced — route your whole LAN through the tunnel
+## 9. Route your whole LAN through the tunnel (gateway mode)
 
-RouterOS **cannot route plain IP traffic through a SOCKS proxy** on its own, so sending your
-whole LAN through the tunnel needs a small **transparent-proxy helper** that consumes
-Hedioum's SOCKS and turns it into a routable gateway. Hedioum's tested, supported surface is
-the **SOCKS5 endpoint** (`172.20.0.2:40001`); the gateway layer below is a standard external
-pattern (sing-box/Xray) that you adapt — it is **not** exercised by this project's CI.
+Hedioum's **gateway mode** makes the container a transparent L3 gateway — exactly like a
+WireGuard/L2TP egress interface. You do **not** touch any device's gateway: the router keeps
+being their gateway, you **mark** the traffic you want tunneled and **route** it to the
+container's veth IP, and the container forwards it into the tunnel. No second container, no
+sing-box. (This whole flow is validated end-to-end on a real RouterOS CHR and on a plain Linux
+router.)
 
-### A. A few devices / apps (no extra container)
+### A. A few devices / apps only (no gateway)
 
-Point any SOCKS5-aware client at `172.20.0.2:40001`: a browser proxy setting, a phone's
-per-app proxy, or an Xray/sing-box client elsewhere on the LAN using it as an outbound. DNS
-is resolved remotely already (no leak). Prefer this if you don't literally need *everything* routed.
+Point any SOCKS5-aware client at the container's `--socks-bind` address `172.20.0.2:40001`: a
+browser proxy setting, a phone's per-app proxy, or an Xray/sing-box outbound. DNS resolves
+remotely already (no leak). Use this if you don't need *everything* routed.
 
-### B. The whole LAN (a sing-box helper container)
+### B. The whole LAN (native gateway — recommended)
 
-Run a second small container (**sing-box**) on the **same bridge**. It takes LAN traffic on a
-TUN and forwards it out through Hedioum's SOCKS; RouterOS then sends the LAN's internet
-traffic to it with a **policy route**, so the router's own default route and management access
-stay intact (no lock-out).
+**1) Turn on gateway mode** when you create the config (step 4) — add `--gateway` to the
+one-shot `setup-iran`, or set `"gateway_enabled": true` in `hedioum.json`. The container then
+forwards all transit that arrives on its interface into the tunnel. Restart the container after
+changing the config.
 
-**1) sing-box config** (`singbox-cfg/config.json`, mounted into the helper):
-
-```json
-{
-  "log": { "level": "warn" },
-  "dns": { "servers": [ { "tag": "remote", "address": "1.1.1.1", "detour": "hedioum" } ] },
-  "inbounds": [ {
-    "type": "tun", "interface_name": "sb0", "inet4_address": "172.31.0.1/30",
-    "auto_route": true, "strict_route": false, "stack": "system"
-  } ],
-  "outbounds": [ {
-    "type": "socks", "tag": "hedioum",
-    "server": "172.20.0.2", "server_port": 40001, "version": "5"
-  } ]
-}
-```
-
-**2) Add the helper container** (its own veth IP `172.20.0.3` on the same bridge):
+**2) Point the LAN's traffic at the container** with a policy route — the router's own default
+route and management access are never touched. Replace `192.168.88.0/24` with your LAN subnet
+(or your existing "to-foreign" address-list / mark):
 
 ```rsc
-/interface/veth/add name=veth-sb address=172.20.0.3/24 gateway=172.20.0.1
-/interface/bridge/port/add bridge=cbr interface=veth-sb
-/container/mounts/add name=sbcfg src=singbox-cfg dst=/etc/sing-box
-/container/add remote-image=ghcr.io/sagernet/sing-box:latest interface=veth-sb mounts=sbcfg \
-    cmd="run -c /etc/sing-box/config.json" root-dir=singbox logging=yes start-on-boot=yes
-/container/start [find where root-dir=singbox]
+/routing/table/add name=via-hedioum fib
+# your existing domestic/foreign split still applies — bypass local/domestic BEFORE this mark
+/ip/firewall/mangle add chain=prerouting src-address=192.168.88.0/24 dst-address-type=!local \
+    action=mark-routing new-routing-mark=via-hedioum passthrough=no
+/ip/route add dst-address=0.0.0.0/0 gateway=172.20.0.2 routing-table=via-hedioum check-gateway=ping
 ```
 
-(Put `config.json` into `singbox-cfg/` the same way you placed Hedioum's config — `/tool/fetch`.
-The sing-box container needs the same `NET_ADMIN` + `/dev/net/tun` that Hedioum's does, which
-RouterOS containers already provide.)
+`check-gateway=ping` gives WireGuard-style failover (the route drops if the container dies —
+add a lower-distance backup route to fall back to direct or a second exit).
 
-**3) Policy-route the LAN to the helper** — replace `192.168.88.0/24` with your LAN subnet.
-This diverts only the LAN's forwarded internet traffic; the router's own default route is
-never touched:
+**3) Two RouterOS gotchas you MUST handle** (learned from real deployments):
 
 ```rsc
-/routing/table/add name=to-tunnel fib
-/ip/firewall/mangle/add chain=prerouting src-address=192.168.88.0/24 \
-    dst-address-type=!local action=mark-routing new-routing-mark=to-tunnel passthrough=no
-/ip/route/add dst-address=0.0.0.0/0 gateway=172.20.0.3 routing-table=to-tunnel
+# a) FastTrack bypasses mangle + routing-marks → exempt the tunneled clients, or routing
+#    silently won't apply:
+/ip/firewall/filter add chain=forward action=accept src-address=192.168.88.0/24 \
+    place-before=[find where action=fasttrack-connection]
+# b) Loop prevention: don't re-mark the container's OWN traffic to the foreign:
+/ip/firewall/mangle add chain=prerouting src-address=172.20.0.2 action=accept place-before=0
+# recommended: clamp MSS so large TCP flows don't blackhole
+/ip/firewall/mangle add chain=forward protocol=tcp tcp-flags=syn action=change-mss \
+    new-mss=1280 tcp-mss=1281-65535
 ```
 
-**4) DNS (no leak):** hand LAN clients a resolver that goes through the tunnel — either let
-sing-box answer DNS (the `dns` block above resolves via the `hedioum` outbound) and advertise
-the helper as the DNS server, or run Hedioum with `--dns` and route `:53` the same way. Verify
-from a LAN client: your public IP should be the foreign's, and a DNS-leak test should show no
-local resolver.
+**4) DNS (no leak):** mark the clients' DNS for foreign names to the tunnel too (the container
+resolves it at the foreign), and keep domestic/`.ir` DNS on a local resolver — or run the
+container with `--dns` and route `:53` the same way. Verify from a LAN client: your public IP
+should be the foreign's, and a DNS-leak test should show no local resolver.
 
-> **Notes.** The gateway container must have IP forwarding for forwarded traffic to reach its
-> TUN; sing-box's `auto_route` handles the in-container routing, but consult the sing-box docs
-> for your version. If only some clients need the tunnel, scope the mangle rule to their
-> addresses instead of the whole subnet. Keep this helper on the trusted container bridge.
+> **Multiple exits** (range A → foreign X, range B → foreign Y): run **one Hedioum container
+> per foreign exit** (each with its own veth IP) and point different routing-marks at different
+> container IPs — the same parallel-routing-table pattern you already use for WireGuard.
+>
+> **On plain Docker / a Linux router** (not MikroTik): the same works with `docker run
+> --network host --cap-add NET_ADMIN --device /dev/net/tun --sysctl net.ipv4.ip_forward=1` and
+> `--gateway-iface <your-LAN-nic>`; then policy-route the LAN to that box. (RouterOS containers
+> provide the caps and forwarding for you.)
 
 ---
 

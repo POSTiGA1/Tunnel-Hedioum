@@ -58,18 +58,22 @@ func StartIranHub(cfg *config.AppConfig) {
 func startTunInterfaces(nodes []config.ForeignNode) []*tundev.Instance {
 	var instances []*tundev.Instance
 	for _, node := range nodes {
-		if !node.TunEnabled {
+		// Gateway mode implies a TUN, so bring the interface up for either.
+		if !node.TunEnabled && !node.GatewayEnabled {
 			continue
 		}
 		if node.TunName == "" || node.TunAddr == "" {
-			slog.Warn("TUN enabled but interface/address missing; skipping", "node", node.Alias)
+			slog.Warn("TUN/gateway enabled but interface/address missing; skipping", "node", node.Alias)
 			continue
 		}
 		inst, err := tundev.Start(tundev.Node{
-			Name:      node.TunName,
-			Addr:      node.TunAddr,
-			SocksAddr: fmt.Sprintf("127.0.0.1:%d", node.LocalSocksPort),
-			EnableDNS: node.DNSEnabled,
+			Name:         node.TunName,
+			Addr:         node.TunAddr,
+			SocksAddr:    fmt.Sprintf("127.0.0.1:%d", node.LocalSocksPort),
+			EnableDNS:    node.DNSEnabled,
+			Gateway:      node.GatewayEnabled,
+			GatewayIface: node.GatewayIface,
+			GatewayLAN:   node.GatewayLAN,
 		})
 		if err != nil {
 			slog.Warn("TUN not started for node (SOCKS still active)",
@@ -77,7 +81,8 @@ func startTunInterfaces(nodes []config.ForeignNode) []*tundev.Instance {
 			continue
 		}
 		slog.Info("TUN egress active",
-			"node", node.Alias, "iface", node.TunName, "addr", node.TunAddr, "dns", node.DNSEnabled)
+			"node", node.Alias, "iface", node.TunName, "addr", node.TunAddr,
+			"dns", node.DNSEnabled, "gateway", node.GatewayEnabled)
 		instances = append(instances, inst)
 	}
 	return instances

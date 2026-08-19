@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Hedioum Pool Tunnel — anti-DPI / anti-censorship tunnel</title>
-<meta name="description" content="High-performance open-source anti-DPI, anti-censorship tunnel in Go. Disguises VLESS/Trojan traffic as SSH, TLS/HTTPS, SMTP/IMAP and a DirectAdmin panel. Real Let's Encrypt certificates, full UDP/QUIC, dynamic connection pools." />
-<meta name="keywords" content="censorship circumvention, anti-censorship, DPI bypass, GFW, VPN, proxy, tunnel, obfuscation, Golang, VLESS, Trojan, Xray, SOCKS5, QUIC, обход блокировок, 翻墙, 科学上网" />
+<meta name="description" content="High-performance open-source anti-DPI, anti-censorship tunnel in Go. Disguises VLESS/Trojan traffic behind a 16-mimic arsenal (SSH, TLS/HTTPS, mail, databases, cPanel/WHM/Webmail/DirectAdmin/Grafana/Prometheus) assembled into coherent personas. Real Let's Encrypt certs, full UDP/QUIC, TUN + transparent gateway mode, runs on MikroTik/RouterOS and in Docker." />
+<meta name="keywords" content="censorship circumvention, anti-censorship, internet freedom, DPI bypass, GFW, VPN, proxy, tunnel, obfuscation, Golang, VLESS, Trojan, Xray, SOCKS5, QUIC, MikroTik, RouterOS, Docker, gateway, TUN, обход блокировок, 翻墙, 科学上网" />
 <meta property="og:title" content="Hedioum Pool Tunnel" />
-<meta property="og:description" content="Open-source anti-DPI / anti-censorship tunnel in Go — protocol mimicry (SSH/TLS/SMTP/IMAP/DirectAdmin), real Let's Encrypt certs, full UDP/QUIC, dynamic connection pools." />
+<meta property="og:description" content="Open-source anti-DPI / anti-censorship tunnel in Go — a 16-mimic arsenal + coherent personas, real Let's Encrypt certs, full UDP/QUIC, TUN + transparent gateway mode, runs on MikroTik/RouterOS and in Docker." />
 <meta property="og:type" content="website" />
 <meta property="og:image" content="https://hedioum.github.io/Hedioum-Pool-Tunnel/social-preview.png" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -56,7 +56,7 @@
   <div class="hero">
     <div class="wrap">
       <h1>Hedioum Pool Tunnel</h1>
-      <p class="tag">A high-performance, open-source <strong>anti-DPI / anti-censorship</strong> tunnel in Go. It disguises encrypted VLESS/Trojan traffic as <strong>SSH, TLS/HTTPS, SMTP/IMAP</strong> and a <strong>DirectAdmin panel</strong> over dynamic, self-scaling connection pools — very hard to fingerprint or block.</p>
+      <p class="tag">A high-performance, open-source <strong>anti-DPI / anti-censorship</strong> tunnel in Go. It hides encrypted VLESS/Trojan traffic behind a <strong>16-mimic arsenal</strong> — SSH, TLS/HTTPS, mail, databases, and hosting/devops panels — assembled into coherent <strong>server personas</strong>, over dynamic self-scaling pools. Optional <strong>TUN + transparent gateway mode</strong> route a whole LAN through the tunnel, and it runs <strong>on MikroTik/RouterOS and in Docker</strong>.</p>
       <div class="badges">
         <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/hedioum/Hedioum-Pool-Tunnel/total?color=brightgreen&label=downloads"></a>
         <a href="https://github.com/hedioum/Hedioum-Pool-Tunnel/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/hedioum/Hedioum-Pool-Tunnel?color=blue&label=release"></a>
@@ -89,7 +89,8 @@
   <div class="wrap">
     <h2>Why Hedioum</h2>
     <div class="grid">
-      <div class="feat"><div class="ic">🎭</div><h3>Protocol mimicry arsenal</h3><p>One node listens behind SSH, TLS/HTTPS, STARTTLS SMTP/IMAP, implicit-TLS SMTPS/IMAPS and a DirectAdmin panel — each install presents a different, shifting on-wire signature.</p></div>
+      <div class="feat"><div class="ic">🎭</div><h3>16-mimic arsenal + personas</h3><p>One node listens behind SSH, TLS/HTTPS, mail (SMTP/IMAP/SMTPS/IMAPS), databases (PostgreSQL/MySQL) and hosting/devops panels (cPanel, WHM, Webmail, DirectAdmin, Docker Registry, Grafana, Prometheus) — assembled into coherent server <strong>personas</strong>, with a per-install shifting on-wire signature.</p></div>
+      <div class="feat"><div class="ic">🛰️</div><h3>MikroTik, Docker &amp; gateway mode</h3><p>Ships as a tiny multi-arch <code>FROM scratch</code> image (~17 MB). Transparent <strong>gateway mode</strong> routes a whole LAN through the tunnel with no per-device change — validated end-to-end on a real RouterOS container and a Linux router.</p></div>
       <div class="feat"><div class="ic">📜</div><h3>Real Let's Encrypt certs</h3><p>With a domain, the TLS mimic serves a genuine, auto-renewing ACME certificate — CT-logged like any real HTTPS host — with a safe self-signed fallback.</p></div>
       <div class="feat"><div class="ic">🔐</div><h3>Authenticated encryption</h3><p>ChaCha20-Poly1305 + HKDF. The token is never sent on the wire and channel-bound auth defeats MITM — with a single crypto layer for high throughput.</p></div>
       <div class="feat"><div class="ic">⏳</div><h3>Protocol-aware lifecycle</h3><p>SSH is the long-lived backbone; non-SSH pipes retire on a randomized time/byte budget and churn to fresh connections — no fixed long-lived signature.</p></div>

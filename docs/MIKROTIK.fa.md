@@ -157,7 +157,7 @@ loopbackِ کانتینر):
 باید خطوطی مثلِ این ببینید:
 
 ```
-INFO hedioum daemon starting version=v0.10.1 role=iran
+INFO hedioum daemon starting version=v0.11.0 role=iran
 INFO SOCKS5 ingress active node=FR addr=172.20.0.2:40001
 INFO TUN egress active node=FR iface=hedioum0 addr=10.200.0.1/24 dns=true
 INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
@@ -171,8 +171,7 @@ INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
 
 - **SOCKS5:** کلاینت‌ها را به **`172.20.0.2:40001`** وصل کنید (همان آدرسی که با `--socks-bind` ست کردید).
   هر اپِ آگاه به SOCKS5، یا outboundِ Xray/sing-box می‌تواند از آن استفاده کند. DNS از راهِ دور resolve می‌شود (بدونِ نشت).
-- **روتینگِ کلِ شبکهٔ محلی:** یک کانتینرِ transparent-proxy (Xray/sing-box در حالتِ `tproxy`) اجرا کنید که این
-  SOCKS را مصرف کند، یا پراکسی را روی تک‌تکِ دستگاه‌ها ست کنید. (پیشرفته؛ خارج از این راهنما.)
+- **روتینگِ کلِ شبکهٔ محلی:** حالتِ **Gateway** را روشن کن و LAN را با mark+route به کانتینر بفرست — بدونِ پراکسیِ اضافه. بخشِ ۹ را ببین.
 - **TUN + DNS (اختیاری):** کانتینر همچنین `hedioum0` (10.200.0.1/24) و یک forwarderِ `:53` را **داخلِ** کانتینر
   عرضه می‌کند. این‌ها بیشتر وقتی مفیدند که یک کانتینرِ transparent-proxy شبکهٔ کانتینر را به‌اشتراک بگذارد؛ برای
   استفادهٔ ساده از SOCKS می‌توانید `--tun --dns` را حذف کنید.
@@ -207,77 +206,60 @@ INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
 
 ---
 
-## ۹. پیشرفته — روتینگِ کلِ LAN از دلِ تونل
+## ۹. روتینگِ کلِ LAN از دلِ تونل (حالتِ Gateway)
 
-RouterOS به‌تنهایی **نمی‌تواند ترافیکِ IP را از دلِ یک پراکسیِ SOCKS رد کند**، پس فرستادنِ کلِ LAN
-از دلِ تونل به یک **هلپرِ transparent-proxy** نیاز دارد که SOCKSِ هدیوم را مصرف کند و آن را به یک
-گیت‌ویِ قابلِ‌روت تبدیل کند. سطحِ تست‌شده و پشتیبانی‌شده‌ی هدیوم همان **endpointِ SOCKS5**
-(`172.20.0.2:40001`) است؛ لایه‌ی گیت‌ویِ زیرین یک الگوی استانداردِ بیرونی (sing-box/Xray) است که خودت
-تطبیقش می‌دهی و توسطِ CIِ این پروژه تست **نمی‌شود**.
+**حالتِ Gateway**ِ هدیوم کانتینر را به یک گیت‌ویِ شفافِ L3 تبدیل می‌کند — دقیقاً مثلِ یک اینترفیسِ خروجیِ
+WireGuard/L2TP. **گیت‌ویِ هیچ دستگاهی را عوض نمی‌کنی**: روتر همچنان گیت‌ویِ آن‌هاست، تو ترافیکی را که می‌خواهی
+تونل شود **mark** می‌کنی و به IP وِثِ کانتینر **route** می‌کنی، و کانتینر آن را به تونل می‌فرستد. نه کانتینرِ دوم،
+نه sing-box. (این مسیر به‌صورتِ سرتاسری روی RouterOS CHRِ واقعی و روی یک روترِ لینوکسیِ ساده تست شده.)
 
-### الف) چند دستگاه / اپ (بدونِ کانتینرِ اضافه)
+### الف) فقط چند دستگاه / اپ (بدونِ gateway)
 
-هر کلاینتِ آگاه به SOCKS5 را به `172.20.0.2:40001` وصل کن: تنظیمِ پراکسیِ مرورگر، پراکسیِ per-appِ گوشی،
-یا یک کلاینتِ Xray/sing-box جای دیگرِ LAN که آن را به‌عنوان outbound استفاده می‌کند. DNS از قبل از راهِ دور
-resolve می‌شود (بدونِ نشت). اگر واقعاً به روتِ *همه‌چیز* نیاز نداری، همین را ترجیح بده.
+هر کلاینتِ آگاه به SOCKS5 را به آدرسِ `--socks-bind`ِ کانتینر (`172.20.0.2:40001`) وصل کن. DNS از راهِ دور
+resolve می‌شود (بدونِ نشت). اگر به روتِ *همه‌چیز* نیاز نداری همین کافی است.
 
-### ب) کلِ LAN (یک کانتینرِ هلپرِ sing-box)
+### ب) کلِ LAN (Gatewayِ بومی — توصیه‌شده)
 
-یک کانتینرِ کوچکِ دوم (**sing-box**) روی **همان bridge** اجرا کن. ترافیکِ LAN را روی یک TUN می‌گیرد و از
-دلِ SOCKSِ هدیوم بیرون می‌فرستد؛ بعد RouterOS ترافیکِ اینترنتِ LAN را با یک **policy route** به آن می‌فرستد،
-طوری که default-routeِ خودِ روتر و دسترسیِ مدیریتی‌اش دست‌نخورده بماند (بدونِ قفل‌شدن).
+**۱) حالتِ Gateway را روشن کن** موقعِ ساختِ کانفیگ (مرحلهٔ ۴) — به `setup-iran`ِ یک‌بارمصرف `--gateway` اضافه کن،
+یا در `hedioum.json` مقدارِ `"gateway_enabled": true` بگذار. بعد از تغییرِ کانفیگ، کانتینر را ری‌استارت کن.
 
-**۱) کانفیگِ sing-box** (`singbox-cfg/config.json` که داخلِ هلپر mount می‌شود):
-
-```json
-{
-  "log": { "level": "warn" },
-  "dns": { "servers": [ { "tag": "remote", "address": "1.1.1.1", "detour": "hedioum" } ] },
-  "inbounds": [ {
-    "type": "tun", "interface_name": "sb0", "inet4_address": "172.31.0.1/30",
-    "auto_route": true, "strict_route": false, "stack": "system"
-  } ],
-  "outbounds": [ {
-    "type": "socks", "tag": "hedioum",
-    "server": "172.20.0.2", "server_port": 40001, "version": "5"
-  } ]
-}
-```
-
-**۲) افزودنِ کانتینرِ هلپر** (با IP وِثِ خودش `172.20.0.3` روی همان bridge):
+**۲) ترافیکِ LAN را به کانتینر بفرست** با یک policy route — default-routeِ خودِ روتر و دسترسیِ مدیریتی هرگز دست
+نمی‌خورد. `192.168.88.0/24` را با ساب‌نتِ LANِ خودت (یا address-list/markِ «به‌خارج»ِ موجودت) عوض کن:
 
 ```rsc
-/interface/veth/add name=veth-sb address=172.20.0.3/24 gateway=172.20.0.1
-/interface/bridge/port/add bridge=cbr interface=veth-sb
-/container/mounts/add name=sbcfg src=singbox-cfg dst=/etc/sing-box
-/container/add remote-image=ghcr.io/sagernet/sing-box:latest interface=veth-sb mounts=sbcfg \
-    cmd="run -c /etc/sing-box/config.json" root-dir=singbox logging=yes start-on-boot=yes
-/container/start [find where root-dir=singbox]
+/routing/table/add name=via-hedioum fib
+# تفکیکِ داخل/خارجِ موجودت سرِ جایش می‌ماند — داخلی/ایران را قبل از این mark بای‌پس کن
+/ip/firewall/mangle add chain=prerouting src-address=192.168.88.0/24 dst-address-type=!local \
+    action=mark-routing new-routing-mark=via-hedioum passthrough=no
+/ip/route add dst-address=0.0.0.0/0 gateway=172.20.0.2 routing-table=via-hedioum check-gateway=ping
 ```
 
-(`config.json` را همان‌طور که کانفیگِ هدیوم را گذاشتی در `singbox-cfg/` بگذار — با `/tool/fetch`.
-کانتینرِ sing-box هم به همان `NET_ADMIN` + `/dev/net/tun` نیاز دارد که هدیوم دارد و RouterOS فراهم می‌کند.)
+`check-gateway=ping` یعنی failoverِ سبکِ WireGuard (اگر کانتینر بمیرد مسیر می‌افتد — یک مسیرِ بک‌آپ با
+distanceِ کمتر برای بازگشت به مستقیم یا خروجیِ دوم بگذار).
 
-**۳) policy-routeِ LAN به هلپر** — `192.168.88.0/24` را با ساب‌نتِ LANِ خودت عوض کن. این فقط ترافیکِ
-اینترنتِ forwardشده‌ی LAN را منحرف می‌کند؛ default-routeِ خودِ روتر هرگز دست نمی‌خورد:
+**۳) دو تلهٔ RouterOS که حتماً باید هندل کنی** (از دیپلویِ واقعی):
 
 ```rsc
-/routing/table/add name=to-tunnel fib
-/ip/firewall/mangle/add chain=prerouting src-address=192.168.88.0/24 \
-    dst-address-type=!local action=mark-routing new-routing-mark=to-tunnel passthrough=no
-/ip/route/add dst-address=0.0.0.0/0 gateway=172.20.0.3 routing-table=to-tunnel
+# الف) FastTrack منگل و routing-mark را دور می‌زند → کلاینت‌های تونل‌شده را معاف کن وگرنه روتینگ بی‌صدا اعمال نمی‌شود:
+/ip/firewall/filter add chain=forward action=accept src-address=192.168.88.0/24 \
+    place-before=[find where action=fasttrack-connection]
+# ب) جلوگیری از loop: ترافیکِ خودِ کانتینر به فارین را دوباره mark نکن:
+/ip/firewall/mangle add chain=prerouting src-address=172.20.0.2 action=accept place-before=0
+# توصیه: MSS را clamp کن تا دانلودهای بزرگ بلک‌هول نشوند:
+/ip/firewall/mangle add chain=forward protocol=tcp tcp-flags=syn action=change-mss \
+    new-mss=1280 tcp-mss=1281-65535
 ```
 
-**۴) DNS (بدونِ نشت):** به کلاینت‌های LAN یک resolver بده که از دلِ تونل می‌رود — یا بگذار sing-box خودش
-به DNS جواب بدهد (بلاکِ `dns` بالا از دلِ outboundِ `hedioum` resolve می‌کند) و آدرسِ هلپر را به‌عنوانِ
-DNS اعلام کن، یا هدیوم را با `--dns` اجرا کن و `:53` را به همان شکل روت کن. از یک کلاینتِ LAN تأیید کن:
-IP عمومی‌ات باید IPِ فارین باشد و تستِ DNS-leak نباید resolverِ محلی نشان دهد.
+**۴) DNS (بدونِ نشت):** DNSِ مقصدهای خارجیِ کلاینت‌ها را هم به تونل mark کن (کانتینر در فارین resolve می‌کند)،
+و DNSِ داخلی/`.ir` را روی یک resolverِ محلی نگه دار — یا کانتینر را با `--dns` اجرا کن و `:53` را همان‌طور روت کن.
+از یک کلاینتِ LAN تأیید کن: IP عمومی‌ات باید IPِ فارین باشد و تستِ DNS-leak نباید resolverِ محلی نشان دهد.
 
-> **نکته‌ها.** کانتینرِ گیت‌وی برای رسیدنِ ترافیکِ forwardشده به TUNش باید IP forwarding داشته باشد؛
-> `auto_route`ِ sing-box روتینگِ داخلِ کانتینر را انجام می‌دهد، ولی برای نسخه‌ات به داکیومنتِ sing-box نگاه کن.
-> اگر فقط بعضی کلاینت‌ها به تونل نیاز دارند، قانونِ mangle را به آدرسِ آن‌ها محدود کن نه کلِ ساب‌نت.
-
----
+> **چند خروجی** (رنجِ A → فارینِ X، رنجِ B → فارینِ Y): **یک کانتینرِ هدیوم به‌ازای هر خروجی** (هر کدام IP وِثِ
+> خودش) اجرا کن و markهای مختلف را به IPهای مختلفِ کانتینر بفرست — همان الگوی چند-جدولیِ WireGuard.
+>
+> **روی Dockerِ ساده / یک روترِ لینوکسی** (نه میکروتیک): همین با `docker run --network host --cap-add NET_ADMIN
+> --device /dev/net/tun --sysctl net.ipv4.ip_forward=1` و `--gateway-iface <NICِ LANت>` کار می‌کند؛ بعد LAN را با
+> policy-route به آن باکس بفرست. (کانتینرهای RouterOS این caps و forwarding را خودشان می‌دهند.)
 
 ## ۱۰. عیب‌یابی
 
