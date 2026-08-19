@@ -129,12 +129,12 @@ RouterOS напишет `turn off power in N to activate changes`. **Выклю�
 
 ```rsc
 /container/config/set registry-url=https://ghcr.io tmpdir=hedioum-tmp
-/container/add remote-image=hedioum/pool-tunnel:v0.10.1 interface=veth1 mounts=hcfg \
+/container/add remote-image=hedioum/pool-tunnel:latest interface=veth1 mounts=hcfg \
     root-dir=hedioum logging=yes start-on-boot=yes
 ```
 
 **Вариант B — импорт tar (реестр не нужен):** на машине с Docker выполните
-`docker save ghcr.io/hedioum/pool-tunnel:v0.10.1 -o hedioum-img.tar`, загрузите на
+`docker save ghcr.io/hedioum/pool-tunnel:latest -o hedioum-img.tar`, загрузите на
 маршрутизатор (`/tool/fetch`, scp или WinBox), затем:
 
 ```rsc

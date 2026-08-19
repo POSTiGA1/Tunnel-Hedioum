@@ -126,12 +126,12 @@ loopbackِ کانتینر):
 
 ```rsc
 /container/config/set registry-url=https://ghcr.io tmpdir=hedioum-tmp
-/container/add remote-image=hedioum/pool-tunnel:v0.10.1 interface=veth1 mounts=hcfg \
+/container/add remote-image=hedioum/pool-tunnel:latest interface=veth1 mounts=hcfg \
     root-dir=hedioum logging=yes start-on-boot=yes
 ```
 
 **گزینهٔ ب — ایمپورتِ tar (بدونِ نیاز به registry):** روی یک ماشینِ دارای Docker،
-`docker save ghcr.io/hedioum/pool-tunnel:v0.10.1 -o hedioum-img.tar`، آن را روی روتر آپلود کنید
+`docker save ghcr.io/hedioum/pool-tunnel:latest -o hedioum-img.tar`، آن را روی روتر آپلود کنید
 (`/tool/fetch`، scp یا WinBox)، بعد:
 
 ```rsc

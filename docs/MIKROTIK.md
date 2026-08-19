@@ -132,12 +132,12 @@ Alternatively, generate `hedioum.json` on your PC with
 
 ```rsc
 /container/config/set registry-url=https://ghcr.io tmpdir=hedioum-tmp
-/container/add remote-image=hedioum/pool-tunnel:v0.10.1 interface=veth1 mounts=hcfg \
+/container/add remote-image=hedioum/pool-tunnel:latest interface=veth1 mounts=hcfg \
     root-dir=hedioum logging=yes start-on-boot=yes
 ```
 
 **Option B — import a tar (no registry needed):** on a machine with Docker,
-`docker save ghcr.io/hedioum/pool-tunnel:v0.10.1 -o hedioum-img.tar`, upload it to the
+`docker save ghcr.io/hedioum/pool-tunnel:latest -o hedioum-img.tar`, upload it to the
 router (`/tool/fetch`, scp, or WinBox), then:
 
 ```rsc

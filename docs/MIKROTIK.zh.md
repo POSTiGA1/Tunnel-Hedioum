@@ -122,12 +122,12 @@ SOCKS 而不要 TUN 时，去掉 `--tun --dns`。）*
 
 ```rsc
 /container/config/set registry-url=https://ghcr.io tmpdir=hedioum-tmp
-/container/add remote-image=hedioum/pool-tunnel:v0.10.1 interface=veth1 mounts=hcfg \
+/container/add remote-image=hedioum/pool-tunnel:latest interface=veth1 mounts=hcfg \
     root-dir=hedioum logging=yes start-on-boot=yes
 ```
 
 **方案 B — 导入 tar（无需镜像仓库）：** 在装有 Docker 的机器上执行
-`docker save ghcr.io/hedioum/pool-tunnel:v0.10.1 -o hedioum-img.tar`，上传到路由器
+`docker save ghcr.io/hedioum/pool-tunnel:latest -o hedioum-img.tar`，上传到路由器
 （`/tool/fetch`、scp 或 WinBox），然后：
 
 ```rsc
