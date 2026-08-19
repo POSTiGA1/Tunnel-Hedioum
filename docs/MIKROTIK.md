@@ -216,7 +216,84 @@ and `docker restart <name>` after a config edit.)*
 
 ---
 
-## 9. Troubleshooting
+## 9. Advanced — route your whole LAN through the tunnel
+
+RouterOS **cannot route plain IP traffic through a SOCKS proxy** on its own, so sending your
+whole LAN through the tunnel needs a small **transparent-proxy helper** that consumes
+Hedioum's SOCKS and turns it into a routable gateway. Hedioum's tested, supported surface is
+the **SOCKS5 endpoint** (`172.20.0.2:40001`); the gateway layer below is a standard external
+pattern (sing-box/Xray) that you adapt — it is **not** exercised by this project's CI.
+
+### A. A few devices / apps (no extra container)
+
+Point any SOCKS5-aware client at `172.20.0.2:40001`: a browser proxy setting, a phone's
+per-app proxy, or an Xray/sing-box client elsewhere on the LAN using it as an outbound. DNS
+is resolved remotely already (no leak). Prefer this if you don't literally need *everything* routed.
+
+### B. The whole LAN (a sing-box helper container)
+
+Run a second small container (**sing-box**) on the **same bridge**. It takes LAN traffic on a
+TUN and forwards it out through Hedioum's SOCKS; RouterOS then sends the LAN's internet
+traffic to it with a **policy route**, so the router's own default route and management access
+stay intact (no lock-out).
+
+**1) sing-box config** (`singbox-cfg/config.json`, mounted into the helper):
+
+```json
+{
+  "log": { "level": "warn" },
+  "dns": { "servers": [ { "tag": "remote", "address": "1.1.1.1", "detour": "hedioum" } ] },
+  "inbounds": [ {
+    "type": "tun", "interface_name": "sb0", "inet4_address": "172.31.0.1/30",
+    "auto_route": true, "strict_route": false, "stack": "system"
+  } ],
+  "outbounds": [ {
+    "type": "socks", "tag": "hedioum",
+    "server": "172.20.0.2", "server_port": 40001, "version": "5"
+  } ]
+}
+```
+
+**2) Add the helper container** (its own veth IP `172.20.0.3` on the same bridge):
+
+```rsc
+/interface/veth/add name=veth-sb address=172.20.0.3/24 gateway=172.20.0.1
+/interface/bridge/port/add bridge=cbr interface=veth-sb
+/container/mounts/add name=sbcfg src=singbox-cfg dst=/etc/sing-box
+/container/add remote-image=ghcr.io/sagernet/sing-box:latest interface=veth-sb mounts=sbcfg \
+    cmd="run -c /etc/sing-box/config.json" root-dir=singbox logging=yes start-on-boot=yes
+/container/start [find where root-dir=singbox]
+```
+
+(Put `config.json` into `singbox-cfg/` the same way you placed Hedioum's config — `/tool/fetch`.
+The sing-box container needs the same `NET_ADMIN` + `/dev/net/tun` that Hedioum's does, which
+RouterOS containers already provide.)
+
+**3) Policy-route the LAN to the helper** — replace `192.168.88.0/24` with your LAN subnet.
+This diverts only the LAN's forwarded internet traffic; the router's own default route is
+never touched:
+
+```rsc
+/routing/table/add name=to-tunnel fib
+/ip/firewall/mangle/add chain=prerouting src-address=192.168.88.0/24 \
+    dst-address-type=!local action=mark-routing new-routing-mark=to-tunnel passthrough=no
+/ip/route/add dst-address=0.0.0.0/0 gateway=172.20.0.3 routing-table=to-tunnel
+```
+
+**4) DNS (no leak):** hand LAN clients a resolver that goes through the tunnel — either let
+sing-box answer DNS (the `dns` block above resolves via the `hedioum` outbound) and advertise
+the helper as the DNS server, or run Hedioum with `--dns` and route `:53` the same way. Verify
+from a LAN client: your public IP should be the foreign's, and a DNS-leak test should show no
+local resolver.
+
+> **Notes.** The gateway container must have IP forwarding for forwarded traffic to reach its
+> TUN; sing-box's `auto_route` handles the in-container routing, but consult the sing-box docs
+> for your version. If only some clients need the tunnel, scope the mangle rule to their
+> addresses instead of the whole subnet. Keep this helper on the trusted container bridge.
+
+---
+
+## 10. Troubleshooting
 
 | Symptom | Fix |
 |---|---|

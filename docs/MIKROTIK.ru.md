@@ -212,7 +212,83 @@ INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
 
 ---
 
-## 9. Устранение неполадок
+## 9. Продвинуто — маршрутизация всей LAN через туннель
+
+RouterOS **сам по себе не умеет маршрутизировать обычный IP-трафик через SOCKS-прокси**,
+поэтому чтобы пустить всю LAN через туннель, нужен небольшой **помощник — прозрачный прокси**,
+который использует SOCKS Hedioum и превращает его в маршрутизируемый шлюз. Проверенная и
+поддерживаемая поверхность Hedioum — это **SOCKS5-эндпоинт** (`172.20.0.2:40001`); слой шлюза
+ниже — стандартный внешний паттерн (sing-box/Xray), который вы адаптируете, и он **не**
+проверяется CI этого проекта.
+
+### A. Несколько устройств / приложений (без доп. контейнера)
+
+Направьте любой SOCKS5-совместимый клиент на `172.20.0.2:40001`: настройка прокси в браузере,
+per-app прокси на телефоне или клиент Xray/sing-box в LAN, использующий его как outbound. DNS
+уже разрешается удалённо (без утечек). Предпочтительно, если не нужно маршрутизировать *всё*.
+
+### B. Вся LAN (контейнер-помощник sing-box)
+
+Запустите второй небольшой контейнер (**sing-box**) на **том же мосту**. Он принимает трафик
+LAN на TUN и выпускает его через SOCKS Hedioum; затем RouterOS отправляет интернет-трафик LAN
+к нему **политикой маршрутизации**, так что собственный маршрут по умолчанию роутера и доступ к
+управлению остаются нетронутыми (без блокировки доступа).
+
+**1) Конфиг sing-box** (`singbox-cfg/config.json`, монтируется в помощник):
+
+```json
+{
+  "log": { "level": "warn" },
+  "dns": { "servers": [ { "tag": "remote", "address": "1.1.1.1", "detour": "hedioum" } ] },
+  "inbounds": [ {
+    "type": "tun", "interface_name": "sb0", "inet4_address": "172.31.0.1/30",
+    "auto_route": true, "strict_route": false, "stack": "system"
+  } ],
+  "outbounds": [ {
+    "type": "socks", "tag": "hedioum",
+    "server": "172.20.0.2", "server_port": 40001, "version": "5"
+  } ]
+}
+```
+
+**2) Добавьте контейнер-помощник** (свой veth-адрес `172.20.0.3` на том же мосту):
+
+```rsc
+/interface/veth/add name=veth-sb address=172.20.0.3/24 gateway=172.20.0.1
+/interface/bridge/port/add bridge=cbr interface=veth-sb
+/container/mounts/add name=sbcfg src=singbox-cfg dst=/etc/sing-box
+/container/add remote-image=ghcr.io/sagernet/sing-box:latest interface=veth-sb mounts=sbcfg \
+    cmd="run -c /etc/sing-box/config.json" root-dir=singbox logging=yes start-on-boot=yes
+/container/start [find where root-dir=singbox]
+```
+
+(Положите `config.json` в `singbox-cfg/` так же, как конфиг Hedioum — через `/tool/fetch`.
+Контейнеру sing-box нужны те же `NET_ADMIN` + `/dev/net/tun`, что и Hedioum — RouterOS их даёт.)
+
+**3) Направьте LAN к помощнику политикой маршрутизации** — замените `192.168.88.0/24` на вашу
+подсеть LAN. Это отводит только пересылаемый интернет-трафик LAN; собственный маршрут по
+умолчанию роутера не трогается:
+
+```rsc
+/routing/table/add name=to-tunnel fib
+/ip/firewall/mangle/add chain=prerouting src-address=192.168.88.0/24 \
+    dst-address-type=!local action=mark-routing new-routing-mark=to-tunnel passthrough=no
+/ip/route/add dst-address=0.0.0.0/0 gateway=172.20.0.3 routing-table=to-tunnel
+```
+
+**4) DNS (без утечек):** выдайте клиентам LAN резолвер, идущий через туннель — либо пусть DNS
+обслуживает sing-box (блок `dns` выше разрешает через outbound `hedioum`) и объявите помощник
+как DNS-сервер, либо запустите Hedioum с `--dns` и так же маршрутизируйте `:53`. Проверьте с
+клиента LAN: ваш публичный IP должен быть зарубежным, а тест на DNS-утечку — без локального резолвера.
+
+> **Примечания.** Контейнеру-шлюзу нужен IP forwarding, чтобы пересылаемый трафик достигал его
+> TUN; `auto_route` sing-box настраивает маршрутизацию внутри контейнера, но сверьтесь с
+> документацией sing-box вашей версии. Если туннель нужен лишь части клиентов, ограничьте
+> правило mangle их адресами, а не всей подсетью.
+
+---
+
+## 10. Устранение неполадок
 
 | Симптом | Решение |
 |---|---|
