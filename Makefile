@@ -38,11 +38,11 @@ build-linux-armv7: deps fmt
 
 # Build a single-arch container image for the host architecture.
 docker:
-	docker build -t hedioum/pool-tunnel:latest .
+	docker build -t ghcr.io/hedioum/pool-tunnel:latest .
 
 # Build and push a multi-arch image (amd64 + arm64 + armv7). Requires a buildx
 # builder and a logged-in registry; override IMAGE to your repo/tag.
-IMAGE ?= hedioum/pool-tunnel:latest
+IMAGE ?= ghcr.io/hedioum/pool-tunnel:latest
 docker-multiarch:
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t $(IMAGE) --push .
 
