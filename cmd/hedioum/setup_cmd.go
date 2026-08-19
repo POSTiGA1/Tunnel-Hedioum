@@ -335,6 +335,7 @@ func cmdAddNode(args []string) {
 	mysqlPort := fs.Int("mysql-port", 3306, "foreign MySQL (STARTTLS) mimic port")
 	tlsServerName := fs.String("tls-servername", "", "TLS SNI (set to the foreign's domain for a real cert)")
 	socksPort := fs.Int("socks-port", 0, "local SOCKS5 bind port")
+	socksBind := fs.String("socks-bind", "127.0.0.1", "SOCKS5 bind address (use the container veth IP or 0.0.0.0 for LAN/router clients; only on a trusted network)")
 	token := fs.String("token", "", "auth token from the foreign node")
 	profile := fs.String("profile", "balanced", "throughput profile: balanced|high-speed")
 	min := fs.Int("min", 0, "min warm-up connections (0 = profile)")
@@ -506,6 +507,7 @@ func cmdAddNode(args []string) {
 	cfg.UpdateForeignNode(config.ForeignNode{
 		Alias:               *alias,
 		LocalSocksPort:      *socksPort,
+		SocksBind:           *socksBind,
 		AuthToken:           authKey,
 		Endpoints:           endpoints,
 		TunEnabled:          tunEnabled,

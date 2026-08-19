@@ -20,12 +20,14 @@ import (
 // AppVersion defines the current build version for the self-updater.
 // CRITICAL: This must match the GitHub Release Tag exactly (e.g., v0.6.0)
 //
-// v0.10.0 adds opt-in TUN mode (per-node OS interface via a gVisor userspace
+// v0.10.x adds opt-in TUN mode (per-node OS interface via a gVisor userspace
 // stack over that node's SOCKS), a leak-free :53 DNS forwarder, and a multi-arch
 // Docker image (verified running on RouterOS/MikroTik containers, TUN included).
+// v0.10.1 makes the SOCKS bind address configurable (--socks-bind) so a hub
+// running in a container can expose SOCKS to LAN/router clients on its veth IP.
 // The wire protocol is UNCHANGED since v0.8.0, and TUN is hub-side only (the
 // foreign is untouched), so v0.10 hubs interoperate with v0.9 foreigns.
-const AppVersion = "v0.10.0"
+const AppVersion = "v0.10.1"
 
 func main() {
 	// Management subcommands (a non-flag first argument): install, setup-*, etc.
