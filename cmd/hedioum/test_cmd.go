@@ -73,8 +73,14 @@ func testNodeConnection(n config.ForeignNode) {
 	}
 	color.HiBlack("   %d/%d endpoints reachable.", reachable, len(n.Endpoints))
 
-	// 2. SOCKS egress (always on).
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", n.LocalSocksPort)
+	// 2. SOCKS egress (always on). Reach the listener on loopback unless it is bound
+	// to a specific non-loopback address (e.g. a container veth IP), in which case
+	// dial that address directly.
+	socksHost := "127.0.0.1"
+	if n.SocksBind != "" && n.SocksBind != "0.0.0.0" && n.SocksBind != "::" && n.SocksBind != "127.0.0.1" && n.SocksBind != "localhost" {
+		socksHost = n.SocksBind
+	}
+	socksAddr := net.JoinHostPort(socksHost, fmt.Sprintf("%d", n.LocalSocksPort))
 	color.HiWhite(" SOCKS egress (%s):", socksAddr)
 	runEgressChecks(socksHTTPClient(socksAddr), foreignIP)
 

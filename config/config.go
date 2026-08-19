@@ -77,6 +77,12 @@ type ForeignNode struct {
 	TargetIP       string `json:"target_ip"`
 	TargetPort     int    `json:"target_port"`
 	LocalSocksPort int    `json:"local_socks_port"`
+	// SocksBind is the address the local SOCKS5 listener binds to. Default
+	// "127.0.0.1" keeps it private to the host (the X-UI/Xray colocated case). Set
+	// it to the container's veth IP (or "0.0.0.0") when the hub runs in a container
+	// and clients on the LAN/router must reach the SOCKS port — only ever on a
+	// trusted network, since a non-loopback bind exposes an open proxy.
+	SocksBind string `json:"socks_bind,omitempty"`
 	// TUN mode (optional, per node — mirrors the per-node SOCKS port). When enabled,
 	// this node also exposes an OS-level virtual interface whose traffic is tunnelled
 	// to THIS node's foreign exit. Each node gets its own interface name and /24 so
@@ -168,6 +174,9 @@ func parseConfig(data []byte) (*AppConfig, error) {
 	for i := range cfg.ForeignNodes {
 		if cfg.ForeignNodes[i].TargetPort == 0 {
 			cfg.ForeignNodes[i].TargetPort = 22 // Default fallback for old configs
+		}
+		if cfg.ForeignNodes[i].SocksBind == "" {
+			cfg.ForeignNodes[i].SocksBind = "127.0.0.1" // default: private to the host
 		}
 		// Synthesize a single SSH endpoint from the legacy target if none set.
 		if len(cfg.ForeignNodes[i].Endpoints) == 0 {

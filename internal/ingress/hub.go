@@ -83,16 +83,26 @@ func startTunInterfaces(nodes []config.ForeignNode) []*tundev.Instance {
 	return instances
 }
 
-// startLocalSocksListener boots up a TCP server listening exclusively on 127.0.0.1.
-// It acts as the local bridge for X-UI's outbound routing.
+// startLocalSocksListener boots up a TCP server for the node's SOCKS5 port. It
+// binds to node.SocksBind (default 127.0.0.1, private to the host, for X-UI/Xray
+// colocated on the box); set to the container veth IP / 0.0.0.0 so LAN/router
+// clients can reach it when the hub runs in a container.
 func startLocalSocksListener(node config.ForeignNode, hubManager *pool.HubManager) {
-	listenAddr := fmt.Sprintf("127.0.0.1:%d", node.LocalSocksPort)
+	bind := node.SocksBind
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	listenAddr := net.JoinHostPort(bind, fmt.Sprintf("%d", node.LocalSocksPort))
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		slog.Error("failed to bind SOCKS5 listener", "node", node.Alias, "addr", listenAddr, "err", err)
 		return
 	}
 
+	if bind != "127.0.0.1" && bind != "localhost" && bind != "::1" {
+		slog.Warn("SOCKS5 bound to a non-loopback address — ensure this network is trusted (open proxy risk)",
+			"node", node.Alias, "addr", listenAddr)
+	}
 	slog.Info("SOCKS5 ingress active", "node", node.Alias, "addr", listenAddr)
 
 	for {
