@@ -79,12 +79,23 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 					for _, n := range cfg.ForeignNodes {
 						fmt.Printf("\n 🟢 Target Alias : %s\n", color.HiWhiteString(n.Alias))
 						fmt.Printf(" ├─ Local SOCKS5 : 127.0.0.1:%d\n", n.LocalSocksPort)
-						if n.TunEnabled {
+						if n.TunEnabled || n.GatewayEnabled {
 							dnsNote := ""
 							if n.DNSEnabled {
 								dnsNote = fmt.Sprintf(" + DNS %s:53", tunGatewayIP(n.TunAddr))
 							}
 							fmt.Printf(" ├─ TUN Egress   : %s @ %s%s\n", color.HiGreenString(n.TunName), n.TunAddr, dnsNote)
+						}
+						if n.GatewayEnabled {
+							scope := "all transit"
+							if len(n.GatewayLAN) > 0 {
+								scope = strings.Join(n.GatewayLAN, ",")
+							}
+							iface := n.GatewayIface
+							if iface == "" {
+								iface = "auto"
+							}
+							fmt.Printf(" ├─ Gateway      : %s (forward %s from %s)\n", color.HiGreenString("on"), scope, iface)
 						}
 						fmt.Printf(" ├─ Pool Sizing  : %d (Warm-up) to %d (Max Peak) Connections\n", n.MinConnections, n.MaxConnections)
 						fmt.Printf(" ├─ DPI Evasion  : Floating Cap %d Mbps (±%d Mbps Jitter)\n", n.BandwidthLimitMbps, n.BandwidthJitterMbps)

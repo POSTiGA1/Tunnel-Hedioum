@@ -346,6 +346,9 @@ func cmdAddNode(args []string) {
 	tunName := fs.String("tun-name", "", "TUN interface name (default: auto, e.g. hedioum0)")
 	tunAddr := fs.String("tun-addr", "", "TUN gateway CIDR (default: auto, e.g. 10.200.0.1/24)")
 	dns := fs.Bool("dns", false, "run a :53 DNS forwarder on the TUN gateway IP (requires --tun)")
+	gateway := fs.Bool("gateway", false, "transparent L3 gateway: forward transit traffic on the LAN iface into the tunnel (implies --tun; for MikroTik/router use)")
+	gatewayIface := fs.String("gateway-iface", "", "LAN-facing interface to forward from (default: auto, e.g. eth0)")
+	gatewayLAN := fs.String("gateway-lan", "", "optional comma-list of LAN subnets to scope forwarding (default: all transit)")
 	_ = fs.Parse(args)
 
 	if *alias == "" {
@@ -482,12 +485,25 @@ func cmdAddNode(args []string) {
 		fail("existing config role is %q, not iran", cfg.Role)
 	}
 
-	// TUN mode (opt-in). Auto-assign a free interface/subnet if the operator did not
-	// pin one; --dns implies :53 on the gateway IP and needs TUN.
-	tunEnabled := *tun
+	// TUN mode (opt-in). Gateway mode implies TUN. Auto-assign a free interface/subnet
+	// if the operator did not pin one; --dns implies :53 on the gateway IP and needs TUN.
+	tunEnabled := *tun || *gateway
 	tName, tAddr := *tunName, *tunAddr
 	if *dns && !tunEnabled {
 		fail("--dns requires --tun")
+	}
+	var gatewayLANs []string
+	if *gatewayLAN != "" {
+		for _, s := range strings.Split(*gatewayLAN, ",") {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			if _, _, err := net.ParseCIDR(s); err != nil {
+				fail("--gateway-lan: invalid subnet %q: %v", s, err)
+			}
+			gatewayLANs = append(gatewayLANs, s)
+		}
 	}
 	if tunEnabled {
 		if tName == "" || tAddr == "" {
@@ -514,6 +530,9 @@ func cmdAddNode(args []string) {
 		TunName:             tName,
 		TunAddr:             tAddr,
 		DNSEnabled:          *dns,
+		GatewayEnabled:      *gateway,
+		GatewayIface:        *gatewayIface,
+		GatewayLAN:          gatewayLANs,
 		MinConnections:      pMin,
 		MaxConnections:      pMax,
 		BandwidthLimitMbps:  pBw,
@@ -533,6 +552,18 @@ func cmdAddNode(args []string) {
 			msg += fmt.Sprintf(", DNS forwarder on %s:53", tunGatewayIP(tAddr))
 		}
 		color.Green(msg)
+	}
+	if *gateway {
+		scope := "all transit"
+		if len(gatewayLANs) > 0 {
+			scope = strings.Join(gatewayLANs, ",")
+		}
+		iface := *gatewayIface
+		if iface == "" {
+			iface = "auto (eth0)"
+		}
+		color.Green("[✓] Gateway mode on: forwarding %s from %s into the tunnel", scope, iface)
+		color.HiBlack("    On the router: mark traffic and route it to this node's veth IP (see docs/MIKROTIK.md).")
 	}
 	// The hub is TUN-capable: make sure the installed unit grants CAP_NET_ADMIN.
 	reconcileUnit("iran")

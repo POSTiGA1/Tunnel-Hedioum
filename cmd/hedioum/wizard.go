@@ -373,6 +373,19 @@ func setupIranNode(cfg *config.AppConfig, isFirstTime bool) {
 		if enableDNS {
 			color.Green("[✓] DNS forwarder: %s:53", tunGatewayIP(tunAddr))
 		}
+
+		// Gateway mode: make this a transparent L3 gateway (for MikroTik/router use).
+		enableGW := false
+		survey.AskOne(&survey.Confirm{
+			Message: "Transparent gateway mode? (forward LAN transit into the tunnel — for MikroTik/router)",
+			Default: false,
+			Help:    "Turns this node into a WireGuard-like egress interface: the router marks traffic and routes it here. Off = TUN/SOCKS only.",
+		}, &enableGW)
+		if enableGW {
+			node.GatewayEnabled = true
+			color.Green("[✓] Gateway mode: forwarding transit from the LAN interface (auto: eth0) into the tunnel")
+			color.HiBlack("    On the router: mark traffic and route it to this node's veth IP (see docs/MIKROTIK.md).")
+		}
 	}
 
 	cfg.UpdateForeignNode(node)

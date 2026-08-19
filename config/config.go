@@ -94,6 +94,20 @@ type ForeignNode struct {
 	// DNSEnabled runs a small DNS forwarder on the TUN gateway IP:53 that resolves
 	// through the tunnel (no DNS leak), for gateway/router clients of this node.
 	DNSEnabled bool `json:"dns_enabled,omitempty"`
+	// Gateway mode (implies TUN). When enabled, the container/host forwards every
+	// packet that arrives on its LAN-facing interface into this node's TUN — turning
+	// the node into a transparent L3 gateway, like a WireGuard/L2TP egress interface.
+	// The upstream router decides WHAT reaches it (via routing marks); the node just
+	// tunnels whatever transit traffic arrives, so it needs no list of LAN subnets.
+	GatewayEnabled bool `json:"gateway_enabled,omitempty"`
+	// GatewayIface is the LAN-facing interface to key the forwarding rule on (the
+	// `iif`). Empty = auto-detect the primary non-loopback, non-TUN link (usually
+	// "eth0" inside a container).
+	GatewayIface string `json:"gateway_iface,omitempty"`
+	// GatewayLAN optionally scopes gateway forwarding to these source subnets as
+	// defense-in-depth. Empty = forward all transit from GatewayIface (the iif rule
+	// already does the right thing). Not required.
+	GatewayLAN []string `json:"gateway_lan,omitempty"`
 	// Endpoints are the (target, mimic) pairs this one SOCKS port is served by. If
 	// empty, a single SSH endpoint is synthesized from TargetIP/TargetPort.
 	Endpoints           []Endpoint `json:"endpoints,omitempty"`
