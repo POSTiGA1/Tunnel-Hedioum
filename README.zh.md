@@ -6,7 +6,7 @@
 
 🌐 **[🇬🇧 English](README.md)** · **[🇮🇷 فارسی](README.fa.md)** · **[🇷🇺 Русский](README.ru.md)** · **🇨🇳 中文**
 
-Hedioum 是一款高性能、企业级的连接多路复用隧道，用于**绕过严格的深度包检测（DPI）与网络审查（翻墙 / 科学上网）**，并在高负载下避免 TCP 雪崩。它把加密的 VLESS/Trojan 流量包裹进动态伸缩的连接池中，这些连接可以佩戴可互换的**伪装外衣**——**SSH、TLS/HTTPS、SMTP/IMAP，以及 DirectAdmin 控制面板**——运行在现代认证加密之上，非常难以被识别或封锁。
+Hedioum 是一款高性能、企业级的连接多路复用隧道，用于**绕过严格的深度包检测（DPI）与网络审查（翻墙 / 科学上网）**，并在高负载下避免 TCP 雪崩。它把加密的 VLESS/Trojan 流量包裹进动态伸缩的连接池中，这些连接佩戴一个**由 16 种伪装组成的军火库**——**SSH、TLS/HTTPS、邮件（SMTP/IMAP/SMTPS/IMAPS）、数据库（PostgreSQL/MySQL），以及托管/运维面板（cPanel、WHM、Webmail、DirectAdmin、Docker Registry、Grafana、Prometheus）**——并组装成一致的服务器**人格（persona）**，运行在现代认证加密之上。它还提供可选的操作系统级 **TUN 接口**，并可**运行在 MikroTik/RouterOS 与 Docker** 中。
 
 > 架构：客户端 → Xray 面板（境内）→ **Hedioum 中枢（境内）** → 伪装隧道 → **境外出口节点** → 自由互联网。
 > 出口节点生成令牌；先安装出口节点，再安装境内节点。
@@ -21,7 +21,12 @@ Hedioum 是一款高性能、企业级的连接多路复用隧道，用于**绕�
 - **协议感知的连接生命周期：** 除原始流量外，最强的隧道特征是「协议 × 连接存活时间」。SSH 是长寿命的主干；每条非 SSH 伪装都是辅助连接，具有**随机的 5–60 分钟寿命 + 1–5 GB 传输额度**，随后排空并churn 到全新连接。每台服务器的时序由其密钥派生，彼此各不相同。
 - **完整 TCP + UDP：** 单个本地 SOCKS5 端口同时服务 TCP（CONNECT）与 UDP（ASSOCIATE），因此 QUIC/HTTP3、DNS、语音/视频通话可用。UDP 走独立子连接池，与 TCP 隔离；节点间从不出现裸 UDP——它被封装在伪装的 TCP 链路里。
 - **可选 IPv6：** 节点间链路与出口可用 IPv6（`egress_ip_mode`：`ipv4` 默认 / `ipv6` / `dual`），默认不泄露服务器的 IPv6 身份。
-- **可插拔协议伪装（军火库）：** 一个节点可同时监听多种伪装——**SSH**（逐字节镜像主机自身 `sshd` 的真实 SSH-2.0 banner）、**TLS/HTTPS**、**STARTTLS SMTP/IMAP**（587/143）、**隐式 TLS SMTPS/IMAPS**（465/993），以及 **2222 端口的 DirectAdmin 面板**。中枢以**每台独特的浮动分布**在它们之间分散物理连接（Chaos Mesh v2）。未授权探测会被路由到与协议相符的诱饵（真实 `sshd`、DirectAdmin 登录页，或可用 `--decoy-style` 选择的 Apache/DirectAdmin 网页伪装，其 `Server`/`ETag`/`Last-Modified` **每台唯一**）；**80 端口**也运行诱饵，让裸 IP 在信誉扫描器眼里像普通网站主机。
+- **可选 TUN 模式 + 无泄漏 DNS：** 除 SOCKS5 端口外，每个节点还可暴露一个操作系统级 **TUN 接口**（`--tun`），让隧道能当作普通网络接口使用；外加一个 **`:53` DNS 转发器**（`--dns`），通过隧道解析（无本地泄漏）。它是 per-node 的（各自的接口 + `/24`）、可选，且**永不成为主机默认路由**——因此中枢自身的出口与 SSH 保持直连。TUN 引擎（在节点 SOCKS 之上的 gVisor 用户态协议栈）不需要外部 `ip` 程序，因此在 `FROM scratch` 容器内也能工作。
+- **运行于 MikroTik / Docker：** 以极小的多架构（`amd64/arm64/armv7`）`FROM scratch` 镜像（~17 MB）发布于 `ghcr.io/hedioum/pool-tunnel`，**已在 RouterOS 容器中验证运行且 TUN 可用**——见分步 **[MikroTik 指南](docs/MIKROTIK.zh.md)**。
+- **可插拔协议伪装——16 种军火库：** 一个节点同时监听多种伪装。**SSH**（逐字节镜像主机自身 `sshd` 的真实 SSH-2.0 banner）；**隐式 TLS** 于 **TLS/HTTPS**、**HTTPS-alt（:8443）**、**SMTPS/IMAPS（465/993）**、一个 **Docker Registry（:5000）**、**Grafana（:3000）**、**Prometheus（:9090）**，以及 **cPanel / WHM / Webmail** 面板（`:2083/2087/2096`，真实的 `cpsrvd` 服务器头与像素级还原的登录页）；**STARTTLS** 于 **SMTP/IMAP（587/143）**、**PostgreSQL（:5432）** 与 **MySQL（:3306）**（真实的协议序言——`SSLRequest`、MySQL v10 问候——在升级到 TLS 之前）；以及 **DirectAdmin** 面板（:2222）。中枢以**每台独特的浮动分布**在它们之间分散物理连接（Chaos Mesh v2）。未授权探测会被路由到与协议相符的诱饵——真实 `sshd`、真实面板登录页，或 `Server`/`ETag`/`Last-Modified` **每台唯一**的网页人格；**80 端口**也运行诱饵，让裸 IP 在信誉扫描器眼里像普通网站主机。
+- **一致的服务器人格（Persona）：** 节点可以佩戴一个**人格**而非随机伪装组合——一个真实管理员能认出的自洽身份：**`cpanel`**（TLS + cPanel/WHM/Webmail）、**`directadmin`**（TLS + DirectAdmin）或 **`devops`**（TLS + HTTPS-alt + Docker + Grafana + Prometheus）。每个人格是 **SSH + 9 个一致的伪装**，由节点令牌确定性地派生（因此中枢能从共享令牌推导出完全相同的集合），并有一致性规则确保不兼容的面板永不同时出现。用 `--persona cpanel|directadmin|devops` 选择，或 `--persona auto`。
+- **仅需粘贴的接入（v2 配对令牌）：** `setup-foreign` 打印一个自包含的**配对令牌**（base64url），已携带出口 IP、每个 伪装→端口 映射、人格与认证密钥——因此中枢只需粘贴一行即可接入：`setup-iran --token <PAIRING_TOKEN> --socks-port 40001`。无需手动 `--target-ip`/`--mimics`/`--persona`。
+- **多端口连接竞速（connect-race）：** 中枢以「无害优先」的加权竞速并结合每端点可达性记忆（冷却/退避）在一个节点的所有伪装端口上拨号；因此若某个端口（如 `:22`）在你的链路上被封或限速，隧道仍会经由其他端口建立并自动恢复。
 - **设计上不泄露 DNS：** SOCKS5 入口把**目标域名**（而非本地解析出的 IP）透传进隧道，DNS 在**境外节点**解析——客户端设为远程 DNS（`domainStrategy: AsIs`）即可。
 - **信道绑定令牌认证（无双重加密）：** TLS 伪装用绑定到服务器实时证书指纹的 HMAC 认证对端，**证明持有令牌却从不发送它**，同时只保留**单层**加密以获得统一高吞吐。客户端用 **uTLS**（真实 Chrome ClientHello）击败 JA3 指纹。
 - **吞吐工程：** 安装时启用 BBR + `fq`，Yamux 流窗口放宽到 16MB，内置 `speedtest` 与 `probe` 命令。
@@ -38,11 +43,11 @@ Hedioum 是一款高性能、企业级的连接多路复用隧道，用于**绕�
 ### 非交互式（自动化）
 
     hedioum-tunnel install
-    hedioum-tunnel setup-foreign --mimics all --move-ssh --domain vpn.example.com --decoy-style directadmin   # 境外；打印令牌
-    hedioum-tunnel setup-iran   --alias DE-01 --target-ip <IP> --mimics all --socks-port 40001 --token <hex>
+    hedioum-tunnel setup-foreign --persona auto --move-ssh --domain vpn.example.com   # 境外；打印配对令牌
+    hedioum-tunnel setup-iran   --alias DE-01 --token <PAIRING_TOKEN> --socks-port 40001   # 粘贴令牌；加 --tun --dns 可暴露 TUN 接口
     systemctl start hedioum.service
 
-`--mimics all` 启用全部军火库（`ssh,tls,smtp,imap,smtps,imaps,directadmin`）。`--domain` 可选（真实 Let's Encrypt 证书），`--decoy-style` 为 `apache`（默认）或 `directadmin`。
+`--persona auto|cpanel|directadmin|devops` 选择一个一致的身份（SSH + 9 个伪装）；`--mimics all`（或逗号分隔列表）仍可用于显式集合。`setup-foreign` 打印自包含的**配对令牌**——把它粘贴到 `setup-iran`，出口 IP、端口与人格便会自动配置好（无需 `--target-ip`/`--mimics`）。`--domain` 可选（真实 Let's Encrypt 证书）。在中枢上加 `--tun`（与 `--dns`）以暴露一个 TUN 接口 + 无泄漏的 `:53` 解析器。
 
 **就地编辑节点**（仅改你传入的字段；令牌保持不变，除非 `--token`/`--rotate-token`）：
 
@@ -62,6 +67,25 @@ Hedioum 是一款高性能、企业级的连接多路复用隧道，用于**绕�
     hedioum-tunnel
 
 可查看活动连接池与每节点端点、监控实时日志、动态**添加/编辑/删除**节点、运行 speedtest / probe / check-ip、安全自更新、彻底卸载。
+
+## 🐳 Docker 与 MikroTik
+
+Hedioum 以极小的多架构（`amd64/arm64/armv7`）`FROM scratch` 镜像（~17 MB）发布于
+`ghcr.io/hedioum/pool-tunnel`。在容器中运行中枢：
+
+    docker run -d --name hedioum --restart unless-stopped \
+      --cap-add NET_ADMIN --device /dev/net/tun \
+      -v /etc/hedioum:/etc/hedioum ghcr.io/hedioum/pool-tunnel:latest
+
+（仅 SOCKS 模式既不需要该 cap 也不需要该 device。）先用一次性运行写入配置，例如
+`docker run --rm -v /etc/hedioum:/etc/hedioum ghcr.io/hedioum/pool-tunnel:latest setup-iran
+--alias FR --token <PAIRING_TOKEN> --socks-port 40001 --tun --dns`。镜像没有 shell，但你仍可
+通过 `docker exec hedioum hedioum-tunnel test --node FR` 运行任意子命令（speedtest、probe、
+edit-node……）；改配置后用 `docker restart hedioum` 生效。
+
+**在 MikroTik/RouterOS 上**，同一镜像运行于 RouterOS 容器中——且 TUN 可用。把 SOCKS 绑定到
+容器 veth 地址（`--socks-bind`），局域网客户端便可访问。从一台全新路由器开始的完整分步指南：
+**[docs/MIKROTIK.zh.md](docs/MIKROTIK.zh.md)**。
 
 ## 🛠 从源码构建
 
