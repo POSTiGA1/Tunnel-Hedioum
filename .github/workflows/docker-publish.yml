@@ -1,0 +1,72 @@
+name: Publish container image
+
+# Builds the multi-arch container image and pushes it to GitHub Container
+# Registry (GHCR). Runs automatically when a v* tag is pushed, and can be
+# triggered by hand (workflow_dispatch) to (re)publish a specific version.
+#
+# Auth uses the built-in GITHUB_TOKEN with `packages: write` — no PAT needed.
+# The image build cross-compiles the Go binary in the amd64 build stage, so the
+# arm64/armv7 images need no QEMU emulation (the runtime stage is FROM scratch).
+#
+# NOTE: the FIRST push creates the package as PRIVATE. Make it public once via
+# GitHub → the hedioum profile/org → Packages → pool-tunnel → Package settings
+# → Change visibility → Public.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to publish (e.g. 0.10.0). Also tagged :latest.'
+        required: true
+        default: '0.10.0'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/pool-tunnel
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=${{ github.event.inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=latest
+
+      - name: Build and push (amd64, arm64, armv7)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+
+      - name: Summary
+        run: |
+          echo "### Published image" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
