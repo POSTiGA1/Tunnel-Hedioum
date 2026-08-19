@@ -153,7 +153,7 @@ SOCKS 而不要 TUN 时，去掉 `--tun --dns`。）*
 你应当看到类似这样的日志：
 
 ```
-INFO hedioum daemon starting version=v0.10.1 role=iran
+INFO hedioum daemon starting version=v0.11.0 role=iran
 INFO SOCKS5 ingress active node=FR addr=172.20.0.2:40001
 INFO TUN egress active node=FR iface=hedioum0 addr=10.200.0.1/24 dns=true
 INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
@@ -167,8 +167,7 @@ INFO pipe established node=FR mimic=tls target=<foreign-ip>:443
 
 - **SOCKS5：** 让客户端指向 **`172.20.0.2:40001`**（你用 `--socks-bind` 设定的地址）。任何支持
   SOCKS5 的应用，或 Xray/sing-box 的 outbound，都可以使用它。DNS 在远端解析（无泄漏）。
-- **整个局域网路由：** 运行一个透明代理容器（`tproxy` 模式的 Xray/sing-box）来消费这个 SOCKS，
-  或在各设备上设置代理。（进阶；超出本指南范围。）
+- **整个局域网路由：** 开启**网关模式**并用打标+路由把局域网导向容器——无需额外代理。见第 9 节。
 - **TUN + DNS（可选）：** 容器还在**容器内部**提供 `hedioum0`（10.200.0.1/24）和一个 `:53`
   转发器。它们在透明代理容器共享容器网络时最有用；纯 SOCKS 用法可以省略 `--tun --dns`。
 
@@ -202,74 +201,59 @@ Hedioum 子命令作为共享配置挂载的**一次性容器**来运行：
 
 ---
 
-## 9. 进阶——让整个局域网走隧道
+## 9. 让整个局域网走隧道（网关模式）
 
-RouterOS **自身无法把普通 IP 流量经由 SOCKS 代理路由**，所以要让整个局域网走隧道，需要一个小型的
-**透明代理助手**来消费 Hedioum 的 SOCKS，并把它变成可路由的网关。Hedioum 经过测试、受支持的接口是
-**SOCKS5 端点**（`172.20.0.2:40001`）；下面的网关层是一个标准的外部模式（sing-box/Xray），由你自行适配，
-且**不**在本项目的 CI 中验证。
+Hedioum 的**网关模式**把容器变成一个透明的 L3 网关——就像一个 WireGuard/L2TP 出口接口。你**不改动任何
+设备的网关**：路由器仍是它们的网关，你把想走隧道的流量**打标**并**路由**到容器的 veth IP，容器再把它送进隧道。
+无需第二个容器，无需 sing-box。（整条链路已在真实 RouterOS CHR 和普通 Linux 路由器上端到端验证。）
 
-### A. 少数设备 / 应用（无需额外容器）
+### A. 只有少数设备 / 应用（不用网关）
 
-让任意支持 SOCKS5 的客户端指向 `172.20.0.2:40001`：浏览器代理设置、手机的分应用代理，或局域网中别处的
-Xray/sing-box 客户端把它当作 outbound。DNS 已在远端解析（无泄漏）。若你并不需要路由「全部」流量，优先用此法。
+让任意 SOCKS5 客户端指向容器的 `--socks-bind` 地址（`172.20.0.2:40001`）。DNS 已在远端解析（无泄漏）。
+若你不需要路由「全部」流量，用此法即可。
 
-### B. 整个局域网（一个 sing-box 助手容器）
+### B. 整个局域网（原生网关——推荐）
 
-在**同一网桥**上再跑一个小容器（**sing-box**）。它在一个 TUN 上接收局域网流量，并经由 Hedioum 的 SOCKS
-转发出去；然后 RouterOS 用**策略路由**把局域网的上网流量送给它，从而保持路由器自身的默认路由与管理访问
-不受影响（不会把自己锁在外面）。
+**1) 创建配置时开启网关模式**（第 4 步）——在一次性 `setup-iran` 上加 `--gateway`，或在 `hedioum.json` 里设
+`"gateway_enabled": true`。改配置后重启容器。
 
-**1) sing-box 配置**（`singbox-cfg/config.json`，挂载进助手）：
-
-```json
-{
-  "log": { "level": "warn" },
-  "dns": { "servers": [ { "tag": "remote", "address": "1.1.1.1", "detour": "hedioum" } ] },
-  "inbounds": [ {
-    "type": "tun", "interface_name": "sb0", "inet4_address": "172.31.0.1/30",
-    "auto_route": true, "strict_route": false, "stack": "system"
-  } ],
-  "outbounds": [ {
-    "type": "socks", "tag": "hedioum",
-    "server": "172.20.0.2", "server_port": 40001, "version": "5"
-  } ]
-}
-```
-
-**2) 添加助手容器**（在同一网桥上有自己的 veth 地址 `172.20.0.3`）：
+**2) 用策略路由把局域网流量导向容器**——路由器自身的默认路由与管理访问绝不被触碰。把 `192.168.88.0/24`
+换成你的局域网网段（或你既有的「去境外」地址列表/标记）：
 
 ```rsc
-/interface/veth/add name=veth-sb address=172.20.0.3/24 gateway=172.20.0.1
-/interface/bridge/port/add bridge=cbr interface=veth-sb
-/container/mounts/add name=sbcfg src=singbox-cfg dst=/etc/sing-box
-/container/add remote-image=ghcr.io/sagernet/sing-box:latest interface=veth-sb mounts=sbcfg \
-    cmd="run -c /etc/sing-box/config.json" root-dir=singbox logging=yes start-on-boot=yes
-/container/start [find where root-dir=singbox]
+/routing/table/add name=via-hedioum fib
+# 你既有的国内/境外分流依然生效——在此标记之前先放行本地/国内
+/ip/firewall/mangle add chain=prerouting src-address=192.168.88.0/24 dst-address-type=!local \
+    action=mark-routing new-routing-mark=via-hedioum passthrough=no
+/ip/route add dst-address=0.0.0.0/0 gateway=172.20.0.2 routing-table=via-hedioum check-gateway=ping
 ```
 
-（把 `config.json` 用与放置 Hedioum 配置相同的方式放入 `singbox-cfg/`——用 `/tool/fetch`。sing-box 容器
-需要与 Hedioum 相同的 `NET_ADMIN` + `/dev/net/tun`，RouterOS 容器已提供。）
+`check-gateway=ping` 提供类 WireGuard 的故障切换（容器挂掉时该路由失效——再加一条更低 distance 的备份路由，
+回退到直连或第二出口）。
 
-**3) 用策略路由把局域网导向助手**——把 `192.168.88.0/24` 换成你的局域网网段。这只会分流局域网转发的上网
-流量；路由器自身的默认路由绝不被触碰：
+**3) 两个必须处理的 RouterOS 陷阱**（来自真实部署）：
 
 ```rsc
-/routing/table/add name=to-tunnel fib
-/ip/firewall/mangle/add chain=prerouting src-address=192.168.88.0/24 \
-    dst-address-type=!local action=mark-routing new-routing-mark=to-tunnel passthrough=no
-/ip/route/add dst-address=0.0.0.0/0 gateway=172.20.0.3 routing-table=to-tunnel
+# a) FastTrack 会绕过 mangle 与 routing-mark → 把被隧道的客户端排除，否则路由会静默地不生效：
+/ip/firewall/filter add chain=forward action=accept src-address=192.168.88.0/24 \
+    place-before=[find where action=fasttrack-connection]
+# b) 防环：不要把容器自身到境外节点的流量再打标：
+/ip/firewall/mangle add chain=prerouting src-address=172.20.0.2 action=accept place-before=0
+# 推荐：钳制 MSS，避免大 TCP 流被黑洞：
+/ip/firewall/mangle add chain=forward protocol=tcp tcp-flags=syn action=change-mss \
+    new-mss=1280 tcp-mss=1281-65535
 ```
 
-**4) DNS（无泄漏）：** 给局域网客户端一个经隧道解析的 DNS——要么让 sing-box 负责 DNS（上面的 `dns` 块经
-`hedioum` outbound 解析）并把助手通告为 DNS 服务器，要么用 `--dns` 运行 Hedioum 并同样路由 `:53`。在局域网
-客户端上验证：你的公网 IP 应为境外节点的 IP，DNS 泄漏测试不应出现本地解析器。
+**4) DNS（无泄漏）：** 把客户端解析境外域名的 DNS 也打标进隧道（容器在境外解析），国内/`.ir` DNS 留在本地解析器
+——或用 `--dns` 运行容器并同样路由 `:53`。在局域网客户端上验证：你的公网 IP 应为境外节点 IP，DNS 泄漏测试不应
+出现本地解析器。
 
-> **注意。** 网关容器需要开启 IP 转发，转发流量才能到达它的 TUN；sing-box 的 `auto_route` 会处理容器内的
-> 路由，但请对照你所用 sing-box 版本的文档。若只有部分客户端需要隧道，把 mangle 规则限定到它们的地址，
-> 而非整个网段。
-
----
+> **多出口**（网段 A → 节点 X，网段 B → 节点 Y）：**每个出口跑一个 Hedioum 容器**（各有自己的 veth IP），把不同
+> routing-mark 指向不同容器 IP——与你为 WireGuard 使用的并行路由表模式相同。
+>
+> **在普通 Docker / Linux 路由器上**（非 MikroTik）：同样可用 `docker run --network host --cap-add NET_ADMIN
+> --device /dev/net/tun --sysctl net.ipv4.ip_forward=1` 加 `--gateway-iface <你的LAN网卡>`；再用策略路由把局域网
+> 导向该主机。（RouterOS 容器会自动提供这些权限与转发。）
 
 ## 10. 故障排查
 
