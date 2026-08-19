@@ -77,6 +77,17 @@ type ForeignNode struct {
 	TargetIP       string `json:"target_ip"`
 	TargetPort     int    `json:"target_port"`
 	LocalSocksPort int    `json:"local_socks_port"`
+	// TUN mode (optional, per node — mirrors the per-node SOCKS port). When enabled,
+	// this node also exposes an OS-level virtual interface whose traffic is tunnelled
+	// to THIS node's foreign exit. Each node gets its own interface name and /24 so
+	// multiple foreign nodes never collide. It never becomes the host default route;
+	// traffic reaches it via policy routing / Xray sendThrough / an upstream router.
+	TunEnabled bool   `json:"tun_enabled,omitempty"`
+	TunName    string `json:"tun_name,omitempty"` // e.g. "hedioum0"
+	TunAddr    string `json:"tun_addr,omitempty"` // e.g. "10.200.0.1/24" (the .1 is this node's gateway IP)
+	// DNSEnabled runs a small DNS forwarder on the TUN gateway IP:53 that resolves
+	// through the tunnel (no DNS leak), for gateway/router clients of this node.
+	DNSEnabled bool `json:"dns_enabled,omitempty"`
 	// Endpoints are the (target, mimic) pairs this one SOCKS port is served by. If
 	// empty, a single SSH endpoint is synthesized from TargetIP/TargetPort.
 	Endpoints           []Endpoint `json:"endpoints,omitempty"`

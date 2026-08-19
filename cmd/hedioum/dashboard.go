@@ -37,8 +37,9 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 				"5. Remove Existing Egress Node",
 				"6. Run Speedtest to a Node",
 				"7. Probe Endpoints (per-mimic reachability)",
-				"8. Check This Server's IP Reputation",
-				"9. Restart the Service (reset all pools)",
+				"8. Test Connection (full egress: exit IP, sites, DNS, TUN)",
+				"9. Check This Server's IP Reputation",
+				"10. Restart the Service (reset all pools)",
 			)
 		} else {
 			options = append(options,
@@ -78,6 +79,13 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 					for _, n := range cfg.ForeignNodes {
 						fmt.Printf("\n 🟢 Target Alias : %s\n", color.HiWhiteString(n.Alias))
 						fmt.Printf(" ├─ Local SOCKS5 : 127.0.0.1:%d\n", n.LocalSocksPort)
+						if n.TunEnabled {
+							dnsNote := ""
+							if n.DNSEnabled {
+								dnsNote = fmt.Sprintf(" + DNS %s:53", tunGatewayIP(n.TunAddr))
+							}
+							fmt.Printf(" ├─ TUN Egress   : %s @ %s%s\n", color.HiGreenString(n.TunName), n.TunAddr, dnsNote)
+						}
 						fmt.Printf(" ├─ Pool Sizing  : %d (Warm-up) to %d (Max Peak) Connections\n", n.MinConnections, n.MaxConnections)
 						fmt.Printf(" ├─ DPI Evasion  : Floating Cap %d Mbps (±%d Mbps Jitter)\n", n.BandwidthLimitMbps, n.BandwidthJitterMbps)
 						fmt.Printf(" └─ Endpoints    : %d mimic(s)\n", len(n.Endpoints))
@@ -146,6 +154,11 @@ func runInteractiveDashboard(cfg *config.AppConfig) {
 
 		case strings.Contains(action, "Probe Endpoints"):
 			runProbeMenu(cfg)
+
+		case strings.Contains(action, "Test Connection"):
+			if node, ok := pickNode(cfg, "Select node to test:"); ok {
+				testNodeConnection(node)
+			}
 
 		case strings.Contains(action, "IP Reputation"):
 			cmdCheckIP(nil)

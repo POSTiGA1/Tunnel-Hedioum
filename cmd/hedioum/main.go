@@ -14,16 +14,18 @@ import (
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/firewall"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/ingress"
 	"github.com/hedioum/Hedioum-Pool-Tunnel/internal/logging"
+	"golang.org/x/term"
 )
 
 // AppVersion defines the current build version for the self-updater.
 // CRITICAL: This must match the GitHub Release Tag exactly (e.g., v0.6.0)
 //
-// v0.6.0 is a NON-breaking feature release (wire protocol unchanged from v0.5.0,
-// so v0.5 and v0.6 nodes interoperate): structured slog logging, non-interactive
-// CLI + self-install, configurable decoy/listen ports, buffered banner reads, and
-// a ghp.ci-free, signature-free-but-robust self-update.
-const AppVersion = "v0.9.0"
+// v0.10.0 adds opt-in TUN mode (per-node OS interface via a gVisor userspace
+// stack over that node's SOCKS), a leak-free :53 DNS forwarder, and a multi-arch
+// Docker image (verified running on RouterOS/MikroTik containers, TUN included).
+// The wire protocol is UNCHANGED since v0.8.0, and TUN is hub-side only (the
+// foreign is untouched), so v0.10 hubs interoperate with v0.9 foreigns.
+const AppVersion = "v0.10.0"
 
 func main() {
 	// Management subcommands (a non-flag first argument): install, setup-*, etc.
@@ -171,14 +173,16 @@ func firewallPorts(cfg *config.AppConfig) []int {
 	return ports
 }
 
-// isTerminal reports whether f is attached to an interactive character device
-// (a TTY) rather than a pipe, file, or /dev/null.
+// isTerminal reports whether f is attached to an interactive TTY rather than a
+// pipe, regular file, or /dev/null. It uses an ioctl (TCGETS) probe: a plain
+// ModeCharDevice check is not enough because /dev/null is itself a character
+// device, so under Docker (whose default stdin is /dev/null) it would falsely
+// look interactive and launch the wizard into an EOF loop.
 func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	if err != nil {
+	if f == nil {
 		return false
 	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	return term.IsTerminal(int(f.Fd()))
 }
 
 // printSetupHint prints the non-interactive configuration commands, shown when the
